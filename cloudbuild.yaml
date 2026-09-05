@@ -1,0 +1,61 @@
+# Executa as validações em um container descartável antes da implantação.
+steps:
+  - id: testes-unitarios
+    name: python:3.14-slim
+    dir: ${_FUNCTION_SOURCE}
+    entrypoint: /bin/sh
+    args:
+      - -c
+      - |
+        set -eu
+        python -m pip install \
+          --disable-pip-version-check \
+          --no-cache-dir \
+          -r requirements.txt
+        python -m compileall -q .
+        python -m unittest discover -s tests -v
+
+  # Somente uma revisão aprovada pelos testes é enviada ao Cloud Run.
+  - id: implanta-cloud-run-function
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      - run
+      - deploy
+      - ${_SERVICE_NAME}
+      - --project=${PROJECT_ID}
+      - --region=${_REGION}
+      - --source=${_FUNCTION_SOURCE}
+      - --function=${_FUNCTION_ENTRY_POINT}
+      - --base-image=${_BASE_IMAGE}
+      - --service-account=${_RUNTIME_SERVICE_ACCOUNT}
+      - --update-env-vars=LANDING_BUCKET=${_LANDING_BUCKET},OBJECT_PREFIX=${_OBJECT_PREFIX},MAX_FILE_SIZE_BYTES=${_MAX_FILE_SIZE_BYTES}
+      - --update-secrets=SOURCE_DB_URL=${_SOURCE_URL_SECRET}:latest
+      - --cpu=1
+      - --memory=512Mi
+      - --timeout=300s
+      - --concurrency=1
+      - --min-instances=0
+      - --max-instances=1
+      - --ingress=all
+      - --quiet
+
+# Valores não sensíveis e específicos deste ambiente.
+substitutions:
+  _SERVICE_NAME: lemon-source-ingestion
+  _REGION: southamerica-east1
+  _FUNCTION_SOURCE: functions/source_ingestion
+  _FUNCTION_ENTRY_POINT: ingest_source_database
+  _BASE_IMAGE: google-24-full/python314
+  _RUNTIME_SERVICE_ACCOUNT: sa-lemon-source-ingestion@lemon-ae-case.iam.gserviceaccount.com
+  _LANDING_BUCKET: lemon-ae-case-ingestion-landing
+  _OBJECT_PREFIX: generator-report/sqlite
+  _MAX_FILE_SIZE_BYTES: "52428800"
+  _SOURCE_URL_SECRET: lemon-source-db-url
+
+# Permite que o gatilho use uma conta de serviço dedicada sem criar um bucket
+# adicional apenas para os logs do build.
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 1200s
