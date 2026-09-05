@@ -26,6 +26,7 @@ steps:
       - --project=${PROJECT_ID}
       - --region=${_REGION}
       - --source=${_FUNCTION_SOURCE}
+      - --build-service-account=projects/${PROJECT_ID}/serviceAccounts/${_BUILD_SERVICE_ACCOUNT}      
       - --function=${_FUNCTION_ENTRY_POINT}
       - --base-image=${_BASE_IMAGE}
       - --service-account=${_RUNTIME_SERVICE_ACCOUNT}
@@ -52,6 +53,7 @@ substitutions:
   _OBJECT_PREFIX: generator-report/sqlite
   _MAX_FILE_SIZE_BYTES: "52428800"
   _SOURCE_URL_SECRET: lemon-source-db-url
+  _BUILD_SERVICE_ACCOUNT: sa-lemon-cloud-build-deployer@lemon-ae-case.iam.gserviceaccount.com
 
 # Permite que o gatilho use uma conta de serviço dedicada sem criar um bucket
 # adicional apenas para os logs do build.
