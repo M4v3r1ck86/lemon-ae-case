@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+# Alteração sem efeito funcional para validar o gatilho automático de CI/CD.
 
 MODULE_DIRECTORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(MODULE_DIRECTORY))
