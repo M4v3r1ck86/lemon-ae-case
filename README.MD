@@ -1,39 +1,102 @@
 # Lemon Generator Report
 
-Solução do case de Analytics Engineering da Lemon Energia para a construção de
-um produto de dados a partir da engenharia reversa da view
-`generator_report`.
+Solução do case de Analytics Engineering da Lemon Energia para construir um
+produto de dados a partir da engenharia reversa da view `generator_report`.
 
-Este primeiro incremento implementa a ingestão e a preservação imutável do
-arquivo SQLite fornecido no case. As transformações analíticas das camadas
-`raw`, `trusted` e `refined` serão implementadas posteriormente no BigQuery,
-exclusivamente em SQL e seguindo a arquitetura lakehouse medallion solicitada.
+O projeto preserva o arquivo SQLite original, carrega suas oito tabelas na
+camada `raw` do BigQuery e prepara a base para as transformações `trusted` e
+`refined` que responderão às perguntas analíticas do case.
 
-## Fluxo implementado
+## Estado atual
 
-```text
-URL HTTPS armazenada no Secret Manager
-        |
-        v
-Cloud Run function HTTP autenticada
-        |
-        +--> download para o filesystem temporário da instância
-        +--> validação do cabeçalho e da integridade do SQLite
-        +--> cálculo do SHA-256 do conteúdo
-        +--> geração de um caminho determinístico
-        |
-        v
-Cloud Storage — cópia original para auditoria e replay
+| Componente | Estado |
+|---|---|
+| Ingestão HTTP da fonte | Implementado, testado e implantado |
+| Preservação imutável no Cloud Storage | Implementado e validado |
+| CI/CD da ingestão | Implementado e validado |
+| Dataset `raw` no BigQuery | Criado |
+| Loader SQLite → `raw` | Implementado e testado localmente |
+| Container e CI/CD do Raw Loader | Em implantação |
+| Camadas `trusted` e `refined` | Planejadas |
+| Orquestração ponta a ponta | Evolução futura |
+
+## Arquitetura
+
+```mermaid
+flowchart LR
+    A[URL HTTPS protegida<br/>Secret Manager]
+    B[Cloud Run Function<br/>lemon-source-ingestion]
+    C[Cloud Storage landing<br/>SQLite imutável]
+    D[Cloud Run Job<br/>lemon-sqlite-to-raw]
+    E[BigQuery<br/>raw]
+    F[Dataform<br/>trusted]
+    G[Dataform<br/>refined]
+    H[Relatório do gerador]
+
+    A --> B
+    B -->|valida, calcula SHA-256 e preserva| C
+    C -->|snapshot selecionado| D
+    D -->|8 tabelas + _ingested_at| E
+    E -. próximo incremento .-> F
+    F -. próximo incremento .-> G
+    G -.-> H
 ```
 
-O download temporário existe porque a validação de integridade abre o arquivo
-localmente com o módulo `sqlite3`. O código utiliza
-`tempfile.TemporaryDirectory`, que seleciona o diretório temporário do runtime
-(normalmente `/tmp` no Cloud Run) e remove o arquivo ao concluir a requisição.
-Esse armazenamento é efêmero e não representa uma camada de dados.
+As responsabilidades foram separadas deliberadamente:
 
-O bucket também não representa a camada `raw`: ele funciona somente como
-landing/source archive do arquivo original recebido.
+- a Cloud Run Function recebe a requisição e preserva a fonte;
+- o Cloud Run Job executa uma carga batch finita e encerra;
+- o BigQuery armazena as camadas analíticas;
+- o Dataform será responsável somente pelas transformações SQL.
+
+O bucket de landing não é a camada `raw`. Ele preserva os bytes originais para
+auditoria e replay; `raw` começa quando as tabelas são materializadas no
+BigQuery.
+
+## Organização dos dados
+
+O BigQuery usa a hierarquia `projeto.dataset.tabela`. Para o escopo do case, o
+projeto e o dataset são:
+
+```text
+lemon-ae-case.raw
+```
+
+Os domínios já estão explícitos nos nomes fornecidos pela origem:
+
+```text
+energy_clients
+energy_farms
+energy_generator_take_rates
+finance_billings
+finance_boletos
+finance_charges
+finance_pixs
+finance_relations
+```
+
+O loader preserva os nomes e colunas da fonte e acrescenta somente
+`_ingested_at TIMESTAMP`. Cada execução usa `WRITE_TRUNCATE`, reconstruindo o
+estado da camada `raw` a partir do snapshot imutável selecionado.
+
+## Principais decisões
+
+- **Fonte imutável:** o SHA-256 do conteúdo compõe o caminho no Cloud Storage.
+- **Idempotência na landing:** `if_generation_match=0` impede sobrescrita.
+- **Segredo fora do Git:** a URL HTTPS é lida do Secret Manager.
+- **Identidades dedicadas:** ingestão, carga raw e implantação usam contas de
+  serviço distintas e permissões com o menor escopo prático.
+- **Componentes independentes:** cada unidade implantável possui suas próprias
+  dependências, testes e processo de build.
+- **Carga previsível:** o schema do BigQuery é derivado dos tipos declarados no
+  SQLite, sem autodetecção baseada em amostra.
+- **Sem pandas no loader:** a extração gera NDJSON por streaming, reduzindo o
+  tamanho da imagem e o consumo de memória.
+- **Uma camada por dataset:** neste case, os datasets serão `raw`, `trusted` e
+  `refined`; os domínios permanecem nos nomes das tabelas.
+
+Os detalhes, alternativas consideradas e limites estão em
+[Arquitetura e decisões](docs/architecture.md).
 
 ## Estrutura do repositório
 
@@ -41,146 +104,92 @@ landing/source archive do arquivo original recebido.
 ./
 ├── functions/
 │   └── source_ingestion/
-│       ├── main.py             # endpoint HTTP e integração com o GCS
-│       ├── ingestion_core.py   # configuração, download, validação e hash
+│       ├── main.py
+│       ├── ingestion_core.py
 │       ├── requirements.txt
 │       └── tests/
-│           └── test_main.py
+│           └── test.py
+├── jobs/
+│   └── sqlite_to_raw/
+│       ├── main.py
+│       ├── sqlite_loader.py
+│       ├── requirements.txt
+│       ├── Dockerfile
+│       ├── .dockerignore
+│       └── tests/
+│           └── test_sqlite_loader.py
+├── docs/
+│   ├── architecture.md
+│   └── runbook.md
+├── cloudbuild.yaml
+├── cloudbuild-sqlite-to-raw.yaml
 ├── .gitignore
-└── README.md
+└── README.MD
 ```
 
-A separação mantém as regras de ingestão testáveis sem depender do Google
-Cloud, mas evita camadas desnecessárias para um MVP pequeno.
+Convenções adotadas:
 
-## Configuração
+- diretórios e módulos Python: `snake_case`;
+- recursos do Google Cloud: `kebab-case`;
+- pipelines adicionais: `cloudbuild-<componente>.yaml`.
 
-| Variável | Obrigatória | Descrição |
-|---|---:|---|
-| `SOURCE_DB_URL` | Sim | URL HTTPS injetada a partir do Secret Manager |
-| `LANDING_BUCKET` | Sim | Bucket de destino; neste case, `lemon-ae-case-ingestion-landing` |
-| `OBJECT_PREFIX` | Não | Prefixo do objeto; padrão: `generator-report/sqlite` |
-| `MAX_FILE_SIZE_BYTES` | Não | Limite do download; padrão: `52428800` (50 MiB) |
+O arquivo `cloudbuild.yaml` mantém o nome original porque o gatilho de ingestão
+já implantado aponta para ele. O pipeline novo segue o nome explícito
+`cloudbuild-sqlite-to-raw.yaml`.
 
-A URL da origem não deve ser commitada, registrada nos logs ou devolvida pela
-API. Como ela pode expirar, deve ser atualizada no Secret Manager quando
-necessário.
+## Testes locais
 
-## Idempotência e rastreabilidade
-
-Depois da validação, o SHA-256 é calculado a partir dos bytes do arquivo. O hash
-passa a identificar o conteúdo e compõe o caminho do objeto:
-
-```text
-gs://lemon-ae-case-ingestion-landing/
-└── generator-report/sqlite/
-    └── sha256=<hash>/
-        └── Lemon_Case_Tecnico_AE.db
-```
-
-O upload utiliza a precondição `if_generation_match=0`, que permite criar o
-objeto somente quando ele ainda não existe. Uma nova chamada com o mesmo
-conteúdo produz o mesmo hash e o mesmo caminho; nesse caso, a função responde
-`already_exists` e não sobrescreve a cópia preservada.
-
-## Cloud Run function
-
-Configuração de referência para reproduzir o MVP:
-
-| Campo | Valor |
-|---|---|
-| Nome | `lemon-source-ingestion` |
-| Região | `southamerica-east1` |
-| Runtime | Python 3.14 com stack `google-24-full` |
-| Entry point | `ingest_source_database` |
-| Autenticação | Obrigatória |
-| Instâncias mínimas | `0` |
-| Instâncias máximas | `1` |
-| Memória | `512 MiB` |
-| Timeout | `300 segundos` |
-| Concorrência | `1` |
-
-A identidade de execução da função recebe somente:
-
-- `roles/storage.objectCreator` no bucket de landing;
-- `roles/secretmanager.secretAccessor` no segredo que contém a URL da origem.
-
-A identidade que chama o endpoint precisa de permissão para invocar o serviço.
-A função não precisa de acesso ao BigQuery neste incremento.
-
-O stack `google-24-full` é utilizado porque a validação depende do módulo
-`sqlite3` e da biblioteca de sistema `libsqlite3.so.0`. O stack mínimo usado na
-primeira implantação não continha essa biblioteca.
-
-## Testes unitários
-
-Os testes cobrem:
-
-- aceitação de um banco SQLite íntegro;
-- rejeição de um arquivo que não seja SQLite;
-- geração determinística do hash e do caminho no GCS.
-
-Para isolar as dependências do projeto, crie um ambiente virtual na raiz do
-repositório. No PowerShell:
+Crie um ambiente virtual na raiz do repositório:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
+```
+
+Função de ingestão:
+
+```powershell
 python -m pip install -r functions/source_ingestion/requirements.txt
 python -m unittest discover -s functions/source_ingestion/tests -v
 ```
 
-Depois da ativação, o VS Code deve utilizar o interpretador
-`.venv\Scripts\python.exe`. Caso ele não seja selecionado automaticamente, use
-`Python: Select Interpreter` na paleta de comandos do VS Code.
-
-Se a política do PowerShell impedir a ativação do script, não é necessário
-alterar a política do sistema. Use diretamente o executável do ambiente:
+Raw Loader:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install -r functions/source_ingestion/requirements.txt
-.\.venv\Scripts\python.exe -m unittest discover -s functions/source_ingestion/tests -v
+python -m pip install -r jobs/sqlite_to_raw/requirements.txt
+python -m unittest discover -s jobs/sqlite_to_raw/tests -v
 ```
 
-O resultado esperado é:
+O resultado atual esperado é `3` testes da ingestão e `4` testes do loader,
+todos com status `OK`. A pasta `.venv` e os artefatos `__pycache__` são locais e
+não devem ser versionados.
 
-```text
-Ran 3 tests
+## Implantação
 
-OK
-```
+| Pipeline | Origem | Destino |
+|---|---|---|
+| `cloudbuild.yaml` | `functions/source_ingestion` | Cloud Run Function `lemon-source-ingestion` |
+| `cloudbuild-sqlite-to-raw.yaml` | `jobs/sqlite_to_raw` | Cloud Run Job `lemon-sqlite-to-raw` |
 
-Para encerrar o ambiente ativado, execute `deactivate`. A pasta `.venv` é apenas
-local, está coberta pelo `.gitignore` e não deve ser enviada ao repositório. O
-Cloud Run recria o ambiente durante o build usando o `requirements.txt`.
+O pipeline da função executa testes e faz deploy por código-fonte. O pipeline do
+job executa testes, constrói a imagem pelo `Dockerfile`, publica no Artifact
+Registry `lemon-data-pipelines` e atualiza a definição do Cloud Run Job. O
+deploy do job não inicia a carga automaticamente.
 
-Se o terminal não reconhecer `python` antes da criação da `.venv`, selecione ou
-instale um interpretador Python no VS Code. Em instalações do Windows que
-disponibilizam o Python Launcher, crie o ambiente com `py -m venv .venv`.
+O procedimento reproduzível, os comandos de IAM, as validações operacionais e
+os problemas já corrigidos estão no [Runbook](docs/runbook.md).
 
-## Teste de integração
+## Próximos incrementos
 
-Com a função implantada e o usuário autenticado no Google Cloud, uma chamada
-manual pode ser feita pelo Cloud Shell:
+1. Implantar e executar o Raw Loader, validando as oito tabelas no BigQuery.
+2. Versionar a engenharia reversa da view `generator_report`.
+3. Implementar testes e transformações `trusted` no Dataform.
+4. Construir as tabelas e métricas `refined` solicitadas pelo case.
+5. Adicionar observabilidade e uma orquestração ponta a ponta; Airflow é uma
+   opção de evolução, não uma dependência do MVP atual.
 
-```bash
-curl -X POST "<CLOUD_RUN_URL>" \
-  -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
-  -H "Content-Type: application/json" \
-  -d '{}'
-```
+## Documentação
 
-Na primeira execução de um conteúdo, o retorno deve informar `created`. A
-repetição com o mesmo arquivo deve informar `already_exists`, com o mesmo
-`gcs_uri` e SHA-256.
-
-## Critérios de aceite do incremento
-
-- a chamada HTTP aceita somente `POST`;
-- o download respeita o limite máximo configurado;
-- o arquivo recebido possui formato SQLite e passa no `PRAGMA integrity_check`;
-- o objeto preservado possui o SHA-256 do arquivo validado;
-- a URL assinada não aparece nos logs nem no retorno;
-- a repetição da execução não duplica nem sobrescreve o conteúdo;
-- a cópia preservada fica disponível para auditoria e replay.
+- [Arquitetura e decisões](docs/architecture.md)
+- [Runbook, verificações e troubleshooting](docs/runbook.md)

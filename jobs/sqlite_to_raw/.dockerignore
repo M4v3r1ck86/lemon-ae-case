@@ -2,12 +2,7 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
-.coverage
-htmlcov/
-.mypy_cache/
-.ruff_cache/
-.env
+tests/
 *.db
 *.sqlite
 *.sqlite3
-*.ndjson

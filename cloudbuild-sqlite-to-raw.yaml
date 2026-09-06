@@ -1,0 +1,70 @@
+# Valida, empacota e implanta o job que carrega o SQLite na camada raw.
+steps:
+  - id: testes-unitarios-raw-loader
+    name: python:3.14-slim
+    dir: ${_JOB_SOURCE}
+    entrypoint: /bin/sh
+    args:
+      - -c
+      - |
+        set -eu
+        python -m compileall -q .
+        python -m unittest discover -s tests -v
+
+  - id: constroi-imagem-raw-loader
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --tag
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REPOSITORY}/${_IMAGE_NAME}:${SHORT_SHA}
+      - ${_JOB_SOURCE}
+
+  - id: publica-imagem-raw-loader
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REPOSITORY}/${_IMAGE_NAME}:${SHORT_SHA}
+
+  # O deploy cria ou atualiza a definição do job, mas não executa a carga.
+  - id: implanta-cloud-run-job
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      - run
+      - jobs
+      - deploy
+      - ${_JOB_NAME}
+      - --project=${PROJECT_ID}
+      - --region=${_REGION}
+      - --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REPOSITORY}/${_IMAGE_NAME}:${SHORT_SHA}
+      - --service-account=${_RUNTIME_SERVICE_ACCOUNT}
+      - --set-env-vars=GCP_PROJECT_ID=${PROJECT_ID},SOURCE_BUCKET=${_SOURCE_BUCKET},SOURCE_OBJECT=${_SOURCE_OBJECT},BIGQUERY_DATASET=${_BIGQUERY_DATASET},BIGQUERY_LOCATION=${_REGION},EXPECTED_TABLE_COUNT=${_EXPECTED_TABLE_COUNT}
+      - --tasks=1
+      - --parallelism=1
+      - --max-retries=1
+      - --task-timeout=600s
+      - --cpu=1
+      - --memory=1Gi
+      - --labels=component=sqlite-to-raw,layer=raw,source=generator-report
+      - --quiet
+
+substitutions:
+  _JOB_NAME: lemon-sqlite-to-raw
+  _JOB_SOURCE: jobs/sqlite_to_raw
+  _REGION: southamerica-east1
+  _ARTIFACT_REPOSITORY: lemon-data-pipelines
+  _IMAGE_NAME: sqlite-to-raw
+  _RUNTIME_SERVICE_ACCOUNT: sa-lemon-raw-loader@lemon-ae-case.iam.gserviceaccount.com
+  _BUILD_SERVICE_ACCOUNT: sa-lemon-cloud-build-deployer@lemon-ae-case.iam.gserviceaccount.com
+  _SOURCE_BUCKET: lemon-ae-case-ingestion-landing
+  _SOURCE_OBJECT: generator-report/sqlite/sha256=e42e7355e0783525cfb40364f698e8bef86f4b26925178a9316570fb4982dc1b/Lemon_Case_Tecnico_AE.db
+  _BIGQUERY_DATASET: raw
+  _EXPECTED_TABLE_COUNT: "8"
+
+# Mantém a identidade do pipeline explícita também em execuções manuais.
+serviceAccount: projects/${PROJECT_ID}/serviceAccounts/${_BUILD_SERVICE_ACCOUNT}
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 1200s
