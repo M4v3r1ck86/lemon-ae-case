@@ -93,3 +93,4 @@ BEGIN
 
   COMMIT TRANSACTION;
 END;
+C:\Users\M4v3r1ck\Documents\dev\lemon-ae-case\sql\procedure\trusted\sp_carregar_cliente_energia_mensal.sql
