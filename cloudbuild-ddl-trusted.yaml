@@ -1,0 +1,46 @@
+# Implanta no BigQuery os DDLs versionados da camada Trusted.
+# O trigger deve observar esta configuracao e sql/ddl/trusted/**.
+steps:
+  - id: implanta-ddls-trusted
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        if [[ ! -d "${_DDL_DIR}" ]]; then
+          echo "Diretorio ${_DDL_DIR} nao encontrado."
+          exit 1
+        fi
+
+        mapfile -t ddl_files < <(
+          find "${_DDL_DIR}" -type f -name 'ddl_*.sql' -print | sort
+        )
+
+        if [[ "$${#ddl_files[@]}" -eq 0 ]]; then
+          echo "Nenhum arquivo ddl_*.sql encontrado em ${_DDL_DIR}."
+          exit 1
+        fi
+
+        for ddl_file in "$${ddl_files[@]}"; do
+          echo "Executando $${ddl_file}"
+          bq query \
+            --project_id="${PROJECT_ID}" \
+            --location="${_BQ_LOCATION}" \
+            --use_legacy_sql=false \
+            < "$${ddl_file}"
+        done
+
+substitutions:
+  _DDL_DIR: sql/ddl/trusted
+  _BQ_LOCATION: southamerica-east1
+  _BUILD_SERVICE_ACCOUNT: sa-lemon-bigquery-ddl-deployer@lemon-ae-case.iam.gserviceaccount.com
+
+serviceAccount: projects/${PROJECT_ID}/serviceAccounts/${_BUILD_SERVICE_ACCOUNT}
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 600s
+
