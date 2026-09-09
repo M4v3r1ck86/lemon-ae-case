@@ -90,17 +90,6 @@ CREATE TABLE IF NOT EXISTS `lemon-ae-case.trusted.cliente_energia_mensal`
   ingerido_em TIMESTAMP
     OPTIONS(description = 'Data e hora em que o registro foi ingerido na camada Raw.'),
 
-  processado_em TIMESTAMP NOT NULL
-    OPTIONS(description = 'Data e hora em que o registro foi processado e publicado na camada Trusted.'),
-
-  hash_registro STRING NOT NULL
-    OPTIONS(description = 'Hash SHA-256 do conteúdo normalizado, utilizado para detectar alterações e apoiar a rastreabilidade.'),
-
-  qtd_duplicatas_origem INT64 NOT NULL
-    OPTIONS(description = 'Quantidade de registros encontrados na Raw para a mesma instalação e competência antes da deduplicação.'),
-
-  flg_registro_valido BOOL NOT NULL
-    OPTIONS(description = 'Indica se o registro atende aos requisitos técnicos mínimos definidos para publicação na Trusted.')
 )
 PARTITION BY dt_mes_referencia
 CLUSTER BY gerador, usina, cod_distribuidora
