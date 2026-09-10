@@ -9,14 +9,25 @@ CREATE OR REPLACE PROCEDURE
   `lemon-ae-case.trusted.sp_carregar_relacao_financeira`()
 BEGIN
   -- ETAPA 1 — NORMALIZAÇÃO
+  -- REGEXP_REPLACE remove somente o primeiro prefixo do grafo. SPLIT não deve
+  -- ser usado para o ID porque o identificador de faturamento pode conter um
+  -- segundo caractere # separando o plano da competência.
   CREATE TEMP TABLE tmp_relacao_financeira_normalizado AS
   SELECT
     NULLIF(TRIM(source), '') AS id_grafo_origem,
     LOWER(SPLIT(NULLIF(TRIM(source), ''), '#')[SAFE_OFFSET(0)]) AS tipo_entidade_origem,
-    SPLIT(NULLIF(TRIM(source), ''), '#')[SAFE_OFFSET(1)] AS id_origem,
+    REGEXP_REPLACE(
+      NULLIF(TRIM(source), ''),
+      r'^[^#]+#',
+      ''
+    ) AS id_origem,
     NULLIF(TRIM(target), '') AS id_grafo_destino,
     LOWER(SPLIT(NULLIF(TRIM(target), ''), '#')[SAFE_OFFSET(0)]) AS tipo_entidade_destino,
-    SPLIT(NULLIF(TRIM(target), ''), '#')[SAFE_OFFSET(1)] AS id_destino,
+    REGEXP_REPLACE(
+      NULLIF(TRIM(target), ''),
+      r'^[^#]+#',
+      ''
+    ) AS id_destino,
     SAFE_CAST(NULLIF(TRIM(create_at), '') AS TIMESTAMP) AS ts_criado_em,
     SAFE_CAST(NULLIF(TRIM(ingestion_time), '') AS TIMESTAMP) AS ts_ingestao_origem,
     _ingested_at AS ingerido_em
