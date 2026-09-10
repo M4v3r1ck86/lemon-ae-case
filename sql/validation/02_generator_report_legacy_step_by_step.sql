@@ -1,26 +1,22 @@
 -- BigQuery / GoogleSQL
 -- ============================================================================
--- GENERATOR REPORT — VERSÃO CORRIGIDA EM TABELAS TEMPORÁRIAS
+-- GENERATOR REPORT — PARIDADE COM A LÓGICA ORIGINAL EM TABELAS TEMPORÁRIAS
 -- ============================================================================
 --
 -- OBJETIVO
--- Preservar o fluxo funcional e as 22 colunas da generator_report, corrigindo
--- somente os quatro pontos upstream comprovados na engenharia reversa:
---
---   FND-001: fanout entre billing, boleto e PIX;
---   FND-002: valor proporcional calculado, mas ignorado na liquidação do GMV;
---   FND-003: perda de centavos pela divisão inteira;
---   FND-004: divisão e numerador do desempenho afetados pelo fluxo anterior.
+-- Reproduzir, em etapas inspecionáveis, a lógica da view
+-- validation.generator_report_legacy_parity.
 --
 -- POR QUE ESTE ARQUIVO EXISTE
--- A versão implantável da view usa CTEs. Este arquivo expressa a mesma proposta
--- corrigida em tabelas temporárias para permitir:
+-- A versão implantável da view precisa permanecer em uma única instrução
+-- CREATE VIEW e, por isso, utiliza CTEs. Este arquivo troca cada CTE por uma
+-- tabela temporária para permitir:
 --
 --   1. executar uma transformação por vez;
 --   2. consultar o resultado de cada etapa;
 --   3. conferir grain, chaves, duplicidades e filtros;
---   4. comprovar que o fanout foi removido antes de anexar GMV e créditos;
---   5. comparar o resultado com o legado e com a candidata refatorada.
+--   4. localizar exatamente onde os valores são multiplicados;
+--   5. comparar o resultado intermediário com a view original.
 --
 -- PADRÃO DE NOMENCLATURA
 -- Todas as tabelas temporárias seguem:
@@ -33,14 +29,9 @@
 --
 -- LIMITAÇÃO DO BIGQUERY
 -- Uma view persistente não pode depender destas tabelas temporárias, pois elas
--- deixam de existir ao final do script. O resultado final é materializado em
--- validation.generator_report_corrected_temp_tables somente para validação.
---
--- HIPÓTESES DE NEGÓCIO A VALIDAR
--- Para billings com vários instrumentos, o script prioriza: instrumento pago,
--- pagamento mais recente, criação mais recente e desempate por tipo/ID.
--- Também reconhece GMV proporcional ao valor líquido pago. Essas escolhas são
--- tecnicamente consistentes, mas ainda requerem aprovação do negócio.
+-- deixam de existir ao final do script. O resultado final deste arquivo é a
+-- temporária tmp_final_result. A criação da view
+-- persistente de paridade é mantida separadamente no dataset validation.
 --
 -- COMO EXECUTAR
 -- Execute este arquivo como um único script. Os SELECTs de diagnóstico podem
@@ -63,7 +54,7 @@
 -- billing_id, valor, status, data de criação e vencimento.
 --
 -- UTILIZADA POR
--- tmp_payment_events.
+-- tmp_bank_slip_payment_events e tmp_pix_payment_events.
 -- ============================================================================
 
 
@@ -128,7 +119,7 @@ WHERE
 -- numero_instalacao + mes_referencia. Também fornece status e payment.
 --
 -- UTILIZADA POR
--- tmp_payment_events.
+-- tmp_bank_slip_payment_events e tmp_pix_payment_events.
 -- ============================================================================
 
 CREATE OR REPLACE TEMP TABLE tmp_charges AS
@@ -205,20 +196,16 @@ WHERE
 -- Fornece total pago, juros e multa para os cálculos financeiros posteriores.
 --
 -- UTILIZADA POR
--- tmp_payment_instrument_candidates.
+-- tmp_bank_slip_payment_events.
 -- ============================================================================
 
 CREATE OR REPLACE TEMP TABLE tmp_bank_slips AS
 SELECT
   source AS boleto_id,
-  status,
-  create_at,
-  payment_date,
   amount,
   bank_slip_paid_total,
   bank_slip_paid_interest,
-  bank_slip_paid_fine,
-  _ingested_at
+  bank_slip_paid_fine
 FROM `lemon-ae-case.raw.finance_boletos`;
 
 
@@ -233,20 +220,16 @@ FROM `lemon-ae-case.raw.finance_boletos`;
 -- Fornece total pago, juros e multa para os cálculos financeiros posteriores.
 --
 -- UTILIZADA POR
--- tmp_payment_instrument_candidates.
+-- tmp_pix_payment_events.
 -- ============================================================================
 
 CREATE OR REPLACE TEMP TABLE tmp_pix_payments AS
 SELECT
   source AS pix_id,
-  status,
-  create_at,
-  payment_date,
   amount,
   pix_paid_total,
   pix_paid_interest,
-  pix_paid_fine,
-  _ingested_at
+  pix_paid_fine
 FROM `lemon-ae-case.raw.finance_pixs`;
 
 
@@ -312,132 +295,25 @@ ORDER BY
 
 
 -- ============================================================================
--- ETAPA 08 — TMP_PAYMENT_INSTRUMENT_CANDIDATES
--- NORMALIZAÇÃO DE BOLETOS E PIXS
+-- ETAPA 08 — TMP_BANK_SLIP_PAYMENT_EVENTS
+-- RAMIFICAÇÃO FINANCEIRA DE BOLETOS
 --
 -- O QUE FAZ
--- Empilha somente instrumentos realmente relacionados a um billing e normaliza
--- boleto/PIX no mesmo schema.
+-- Parte de charge → billing e adiciona todos os boletos do billing.
 --
--- CORREÇÃO FND-003
--- Os valores em centavos são convertidos para NUMERIC e divididos por 100 sem
--- DIV, preservando os centavos.
--- ============================================================================
-
-CREATE OR REPLACE TEMP TABLE tmp_payment_instrument_candidates AS
-SELECT
-  relation.billing_id,
-  bank_slip.boleto_id AS instrumento_id,
-  'boleto' AS tipo_instrumento,
-  bank_slip.status AS instrumento_status,
-  SAFE_CAST(bank_slip.create_at AS TIMESTAMP) AS instrumento_criado_em,
-  SAFE_CAST(bank_slip.payment_date AS DATE) AS instrumento_data_pagamento,
-  SAFE_DIVIDE(
-    SAFE_CAST(bank_slip.amount AS NUMERIC),
-    NUMERIC '100'
-  ) AS instrumento_amount_brl,
-  SAFE_DIVIDE(
-    SAFE_CAST(bank_slip.bank_slip_paid_total AS NUMERIC),
-    NUMERIC '100'
-  ) AS instrumento_amount_paid_brl,
-  SAFE_DIVIDE(
-    SAFE_CAST(
-      COALESCE(bank_slip.bank_slip_paid_interest, 0)
-        + COALESCE(bank_slip.bank_slip_paid_fine, 0)
-      AS NUMERIC
-    ),
-    NUMERIC '100'
-  ) AS instrumento_fine_and_interest_brl,
-  SAFE_DIVIDE(
-    SAFE_CAST(bank_slip.bank_slip_paid_total AS NUMERIC)
-      - SAFE_CAST(
-          COALESCE(bank_slip.bank_slip_paid_interest, 0) AS NUMERIC
-        )
-      - SAFE_CAST(COALESCE(bank_slip.bank_slip_paid_fine, 0) AS NUMERIC),
-    NUMERIC '100'
-  ) AS instrumento_amount_paid_net_brl,
-  bank_slip._ingested_at
-FROM tmp_billing_bank_slip_relations AS relation
-INNER JOIN tmp_bank_slips AS bank_slip
-  ON bank_slip.boleto_id = relation.boleto_id
-
-UNION ALL
-
-SELECT
-  relation.billing_id,
-  pix.pix_id AS instrumento_id,
-  'pix' AS tipo_instrumento,
-  pix.status AS instrumento_status,
-  SAFE_CAST(pix.create_at AS TIMESTAMP) AS instrumento_criado_em,
-  SAFE_CAST(pix.payment_date AS DATE) AS instrumento_data_pagamento,
-  SAFE_DIVIDE(
-    SAFE_CAST(pix.amount AS NUMERIC),
-    NUMERIC '100'
-  ) AS instrumento_amount_brl,
-  SAFE_DIVIDE(
-    SAFE_CAST(pix.pix_paid_total AS NUMERIC),
-    NUMERIC '100'
-  ) AS instrumento_amount_paid_brl,
-  SAFE_DIVIDE(
-    SAFE_CAST(
-      COALESCE(pix.pix_paid_interest, 0)
-        + COALESCE(pix.pix_paid_fine, 0)
-      AS NUMERIC
-    ),
-    NUMERIC '100'
-  ) AS instrumento_fine_and_interest_brl,
-  SAFE_DIVIDE(
-    SAFE_CAST(pix.pix_paid_total AS NUMERIC)
-      - SAFE_CAST(COALESCE(pix.pix_paid_interest, 0) AS NUMERIC)
-      - SAFE_CAST(COALESCE(pix.pix_paid_fine, 0) AS NUMERIC),
-    NUMERIC '100'
-  ) AS instrumento_amount_paid_net_brl,
-  pix._ingested_at
-FROM tmp_billing_pix_relations AS relation
-INNER JOIN tmp_pix_payments AS pix
-  ON pix.pix_id = relation.pix_id;
-
-
--- ============================================================================
--- ETAPA 09 — TMP_SELECTED_PAYMENT_INSTRUMENT
--- ESCOLHA DE UM ÚNICO INSTRUMENTO POR BILLING
+-- POR QUE EXISTE
+-- Normaliza os nomes específicos do boleto para nomes comuns de instrumento,
+-- permitindo o UNION ALL posterior com a ramificação de PIX.
 --
--- CORREÇÃO FND-001
--- Impede que um billing com vários boletos/PIX produza várias cópias do GMV e
--- dos créditos do cliente. A prioridade é explícita e determinística.
--- ============================================================================
-
-CREATE OR REPLACE TEMP TABLE tmp_selected_payment_instrument AS
-SELECT
-  *,
-  COUNT(*) OVER (PARTITION BY billing_id) AS quantidade_instrumentos,
-  COUNTIF(LOWER(instrumento_status) = 'paid') OVER (
-    PARTITION BY billing_id
-  ) AS quantidade_instrumentos_pagos
-FROM tmp_payment_instrument_candidates
-QUALIFY
-  ROW_NUMBER() OVER (
-    PARTITION BY billing_id
-    ORDER BY
-      IF(LOWER(instrumento_status) = 'paid', 0, 1),
-      instrumento_data_pagamento DESC,
-      instrumento_criado_em DESC,
-      _ingested_at DESC,
-      tipo_instrumento,
-      instrumento_id
-  ) = 1;
-
-
--- ============================================================================
--- ETAPA 10 — TMP_PAYMENT_EVENTS
--- EVENTO FINANCEIRO NO GRAIN COBRANÇA × BILLING
+-- PONTO EXATO DO FANOUT
+-- O LEFT JOIN com billings2boletos gera uma linha para cada boleto relacionado.
+-- Se não existir boleto, o LEFT JOIN ainda preserva uma linha com campos NULL.
 --
--- O QUE FAZ
--- Parte uma única vez de charge → billing e anexa, quando existir, somente o
--- instrumento selecionado. Billings sem instrumento continuam preservados.
+-- CONVERSÃO MONETÁRIA ORIGINAL PRESERVADA
+-- DIV(valor, 100) reproduz a divisão inteira do SQLite e descarta centavos.
 -- ============================================================================
 
-CREATE OR REPLACE TEMP TABLE tmp_payment_events AS
+CREATE OR REPLACE TEMP TABLE tmp_bank_slip_payment_events AS
 SELECT
   charge.cancelled_at,
   charge.cancellation_reason,
@@ -446,57 +322,140 @@ SELECT
   charge.disco_consumer_unit_id,
   charge.payment_date,
   charge.status AS charge_status,
-  SAFE_DIVIDE(
-    SAFE_CAST(charge.amount AS NUMERIC),
-    NUMERIC '100'
-  ) AS charge_amount_brl,
-  SAFE_DIVIDE(
-    SAFE_CAST(billing.amount AS NUMERIC),
-    NUMERIC '100'
-  ) AS billing_amount_brl,
+  DIV(charge.amount, 100) AS charge_amount_brl,
+  DIV(billing.amount, 100) AS billing_amount_brl,
   billing.billing_energy_farm_id,
   billing.billing_id,
   billing.status AS billing_status,
   billing.create_at AS billing_create_at,
   billing.due_date AS billing_due_date,
-  instrument.instrumento_amount_brl,
-  instrument.instrumento_amount_paid_brl,
-  instrument.instrumento_fine_and_interest_brl,
-  instrument.instrumento_amount_paid_net_brl,
+  DIV(bank_slip.amount, 100) AS instrumento_amount_brl,
+  DIV(bank_slip.bank_slip_paid_total, 100) AS instrumento_amount_paid_brl,
+  DIV(
+    bank_slip.bank_slip_paid_interest + bank_slip.bank_slip_paid_fine,
+    100
+  ) AS instrumento_fine_and_interest_brl,
+  DIV(
+    bank_slip.bank_slip_paid_total
+      - bank_slip.bank_slip_paid_interest
+      - bank_slip.bank_slip_paid_fine,
+    100
+  ) AS instrumento_amount_paid_net_brl,
   billing.create_at IS NOT NULL AS possui_data_emissao
 FROM tmp_charges AS charge
 INNER JOIN tmp_billing_charge_relations AS relation
   ON relation.charge_id = charge.charge_id
 INNER JOIN tmp_billings AS billing
   ON billing.billing_id = relation.billing_id
-LEFT JOIN tmp_selected_payment_instrument AS instrument
-  ON instrument.billing_id = billing.billing_id;
+LEFT JOIN tmp_billing_bank_slip_relations AS bank_slip_relation
+  ON bank_slip_relation.billing_id = billing.billing_id
+LEFT JOIN tmp_bank_slips AS bank_slip
+  ON bank_slip.boleto_id = bank_slip_relation.boleto_id;
 
 
 -- ============================================================================
--- DIAGNÓSTICO 02 — CONTROLE DE CARDINALIDADE APÓS A CORREÇÃO
+-- ETAPA 09 — TMP_PIX_PAYMENT_EVENTS
+-- RAMIFICAÇÃO FINANCEIRA DE PIX
+--
+-- O QUE FAZ
+-- Parte da mesma relação charge → billing e adiciona todos os PIX do billing.
+--
+-- POR QUE EXISTE
+-- Normaliza os campos específicos do PIX para o mesmo schema criado no bloco
+-- de bank_slip.
+--
+-- PONTO EXATO DO FANOUT
+-- O LEFT JOIN gera uma linha para cada PIX relacionado. Se não existir PIX,
+-- ainda preserva uma linha com campos NULL.
+-- ============================================================================
+
+CREATE OR REPLACE TEMP TABLE tmp_pix_payment_events AS
+SELECT
+  charge.cancelled_at,
+  charge.cancellation_reason,
+  charge.charge_id,
+  charge.reference_month,
+  charge.disco_consumer_unit_id,
+  charge.payment_date,
+  charge.status AS charge_status,
+  DIV(charge.amount, 100) AS charge_amount_brl,
+  DIV(billing.amount, 100) AS billing_amount_brl,
+  billing.billing_energy_farm_id,
+  billing.billing_id,
+  billing.status AS billing_status,
+  billing.create_at AS billing_create_at,
+  billing.due_date AS billing_due_date,
+  DIV(pix.amount, 100) AS instrumento_amount_brl,
+  DIV(pix.pix_paid_total, 100) AS instrumento_amount_paid_brl,
+  DIV(
+    pix.pix_paid_interest + pix.pix_paid_fine,
+    100
+  ) AS instrumento_fine_and_interest_brl,
+  DIV(
+    pix.pix_paid_total
+      - pix.pix_paid_interest
+      - pix.pix_paid_fine,
+    100
+  ) AS instrumento_amount_paid_net_brl,
+  billing.create_at IS NOT NULL AS possui_data_emissao
+FROM tmp_charges AS charge
+INNER JOIN tmp_billing_charge_relations AS relation
+  ON relation.charge_id = charge.charge_id
+INNER JOIN tmp_billings AS billing
+  ON billing.billing_id = relation.billing_id
+LEFT JOIN tmp_billing_pix_relations AS pix_relation
+  ON pix_relation.billing_id = billing.billing_id
+LEFT JOIN tmp_pix_payments AS pix
+  ON pix.pix_id = pix_relation.pix_id;
+
+
+-- ============================================================================
+-- ETAPA 10 — TMP_PAYMENT_EVENTS
+-- UNIÃO DAS DUAS RAMIFICAÇÕES DE INSTRUMENTO
+--
+-- O QUE FAZ
+-- Empilha todas as linhas de boleto e todas as linhas de PIX.
+--
+-- POR QUE EXISTE
+-- Permite que as etapas seguintes tratem os dois meios de pagamento com os
+-- mesmos nomes de coluna.
+--
+-- ERRO REPRODUZIDO INTENCIONALMENTE
+-- UNION ALL não elimina duplicidades. Como cada ramificação parte novamente do
+-- mesmo charge × billing, o GMV e os créditos adicionados posteriormente são
+-- repetidos pelo número de linhas desta união.
+--
+-- Este arquivo mantém o comportamento para provar a paridade. A versão
+-- refatorada seleciona um instrumento antes de anexar métricas de outro grain.
+-- ============================================================================
+
+CREATE OR REPLACE TEMP TABLE tmp_payment_events AS
+SELECT *
+FROM tmp_bank_slip_payment_events
+
+UNION ALL
+
+SELECT *
+FROM tmp_pix_payment_events;
+
+
+-- ============================================================================
+-- DIAGNÓSTICO 02 — CONTAGEM ANTES E DEPOIS DO UNION ALL
 --
 -- O QUE MOSTRA
--- A quantidade de candidatos, instrumentos escolhidos e eventos financeiros.
--- A segunda consulta deve retornar zero linhas; caso contrário ainda existe
--- duplicação no grain cobrança × billing.
+-- A quantidade de charge × billing antes dos instrumentos e a quantidade de
+-- linhas produzida depois de boleto + PIX.
 -- ============================================================================
 
 -- SELECT
---   (SELECT COUNT(*) FROM tmp_payment_instrument_candidates)
---     AS instrumentos_candidatos,
---   (SELECT COUNT(*) FROM tmp_selected_payment_instrument)
---     AS instrumentos_selecionados,
+--   (SELECT COUNT(*) FROM tmp_billing_charge_relations)
+--     AS relacionamentos_billing_charge,
+--   (SELECT COUNT(*) FROM tmp_bank_slip_payment_events)
+--     AS linhas_ramificacao_boleto,
+--   (SELECT COUNT(*) FROM tmp_pix_payment_events)
+--     AS linhas_ramificacao_pix,
 --   (SELECT COUNT(*) FROM tmp_payment_events)
---     AS eventos_financeiros;
---
--- SELECT
---   charge_id,
---   billing_id,
---   COUNT(*) AS quantidade_linhas
--- FROM tmp_payment_events
--- GROUP BY 1, 2
--- HAVING COUNT(*) > 1;
+--     AS linhas_depois_union_all;
 
 
 -- ============================================================================
@@ -511,7 +470,8 @@ LEFT JOIN tmp_selected_payment_instrument AS instrument
 -- Entrega um único schema financeiro para o join com energy_clients.
 --
 -- GRAIN REAL
--- Uma linha por charge × billing, com no máximo um instrumento selecionado.
+-- Ainda é charge × billing × linha produzida pela ramificação de instrumento.
+-- Não é uma linha única por cobrança.
 -- ============================================================================
 
 CREATE OR REPLACE TEMP TABLE tmp_normalized_financial_events AS
@@ -569,7 +529,7 @@ SELECT
   disco,
   creditos_faturados_k_wh,
   gmv_real_oficial_brl,
-  SAFE_CAST(gmv_gerador_brl AS NUMERIC) AS gmv_gerador_brl,
+  gmv_gerador_brl,
   take_rate_lemon_brl,
   saldo_bop_k_wh,
   creditos_recebidos_no_mes_k_wh,
@@ -599,23 +559,27 @@ FROM `lemon-ae-case.raw.energy_clients`;
 -- Coloca no mesmo registro a emissão/pagamento financeiro e o GMV/créditos do
 -- cliente, permitindo as flags e agregações seguintes.
 --
--- CORREÇÕES FND-001 E FND-002
--- A base financeira já possui no máximo uma linha por charge × billing antes de
--- receber o GMV. O valor liquidado do gerador é calculado proporcionalmente ao
--- valor líquido pago e será efetivamente usado na agregação posterior.
+-- PONTO CRÍTICO
+-- O gmv_gerador_brl está no grain instalação × mês. Como full_finance já pode
+-- possuir várias linhas para o mesmo billing, o GMV é copiado em todas elas.
+-- A multiplicação torna-se monetária quando o SUM é executado mais adiante.
+--
+-- CÁLCULO ORIGINAL PRESERVADO
+-- valor_liquidado_gerador_brl é calculado proporcionalmente, mas a view original
+-- não usa esse campo em valor_liquidado_gerador_mes; ela volta a somar o GMV.
 -- ============================================================================
 
 CREATE OR REPLACE TEMP TABLE tmp_financial_events_enriched_with_clients AS
 SELECT
   financial_event.*,
   client.* EXCEPT (numero_instalacao, mes_referencia),
-  SAFE_DIVIDE(
+  DIV(
     financial_event.valor_liquidado_ex_multa_juros_brl,
-    NULLIF(financial_event.valor_emitido_brl, NUMERIC '0')
+    NULLIF(financial_event.valor_emitido_brl, 0)
   ) * client.gmv_gerador_brl AS valor_liquidado_gerador_brl,
-  SAFE_DIVIDE(
+  DIV(
     financial_event.valor_liquidado_ex_multa_juros_brl,
-    NULLIF(financial_event.valor_emitido_brl, NUMERIC '0')
+    NULLIF(financial_event.valor_emitido_brl, 0)
   ) + financial_event.multa_juros_recebido_brl
     AS liquidado_gerador_multas_juros,
   MIN(financial_event.data_vencimento) OVER (
@@ -950,9 +914,10 @@ FROM (
 -- POR QUE EXISTE
 -- As métricas seguintes são somas condicionais controladas por estas flags.
 --
--- COMPORTAMENTO ORIGINAL PRESERVADO
--- Estas flags permanecem iguais ao espelho de paridade. Sua revisão não é
--- necessária para corrigir os quatro findings tratados neste arquivo.
+-- COMPORTAMENTO DE PARIDADE
+-- flag_emitido_do_mes usa possui_data_emissao, e
+-- flag_emitido_meses_anteriores é sempre FALSE. Isso reproduz o efeito do cast
+-- de data defeituoso executado pela view original no SQLite.
 -- ============================================================================
 
 CREATE OR REPLACE TEMP TABLE tmp_payment_timing_flags AS
@@ -997,9 +962,14 @@ WHERE
 -- O QUE FAZ
 -- Converte as flags em métricas por meio de SUM(IF(...)).
 --
--- CORREÇÕES FND-001 E FND-002
--- O GMV e os créditos chegam sem multiplicação por instrumento. Para liquidação,
--- é somado valor_liquidado_gerador_brl em vez do GMV integral.
+-- PONTO ONDE O FANOUT SE TORNA UM VALOR INCORRETO
+-- As linhas já foram multiplicadas em boleto + PIX. Ao somar gmv_gerador_brl e
+-- creditos_faturados_k_wh, o SQL contabiliza essas medidas uma vez por linha de
+-- instrumento, embora elas pertençam ao grain instalação × competência.
+--
+-- EXEMPLO
+-- Um billing com 2 boletos e 2 PIX gera 4 linhas e soma o mesmo GMV 4 vezes.
+-- Um billing com 3 boletos e 3 PIX gera 6 linhas e soma o mesmo GMV 6 vezes.
 -- ============================================================================
 
 CREATE OR REPLACE TEMP TABLE tmp_monthly_settlement_aggregates AS
@@ -1012,21 +982,9 @@ SELECT
     AS cobranca_gerador_mes,
   SUM(IF(flag_emitido_meses_anteriores, gmv_gerador_brl, 0))
     AS cobranca_gerador_meses_anteriores,
-  SUM(
-    IF(
-      flag_liquidado_do_mes,
-      valor_liquidado_gerador_brl,
-      NUMERIC '0'
-    )
-  )
+  SUM(IF(flag_liquidado_do_mes, gmv_gerador_brl, 0))
     AS valor_liquidado_gerador_mes,
-  SUM(
-    IF(
-      flag_liquidado_meses_anteriores,
-      valor_liquidado_gerador_brl,
-      NUMERIC '0'
-    )
-  )
+  SUM(IF(flag_liquidado_meses_anteriores, gmv_gerador_brl, 0))
     AS valor_liquidado_gerador_meses_anteriores,
   SUM(IF(flag_liquidado_do_mes, valor_liquidado_ex_multa_juros_brl, 0))
     AS valor_liquidado_ex_multa_juros_mes,
@@ -1071,9 +1029,8 @@ GROUP BY
 -- Soma as parcelas do mês e de meses anteriores para produzir receita bruta,
 -- receita efetivamente paga e receita de multas.
 --
--- QUALIDADE
--- As métricas recebem valores já deduplicados por instrumento e o GMV
--- proporcional reconhecido na etapa anterior.
+-- HERANÇA DE QUALIDADE
+-- As métricas herdam qualquer multiplicação ocorrida antes da agregação.
 -- ============================================================================
 
 CREATE OR REPLACE TEMP TABLE tmp_monthly_revenue_metrics AS
@@ -1161,9 +1118,9 @@ GROUP BY 1, 2;
 -- POR QUE EXISTE
 -- O resultado será o numerador de desempenho_lemon.
 --
--- CORREÇÃO FND-004
--- Os créditos são agregados depois da remoção do fanout e, portanto, deixam de
--- ser repetidos pela quantidade de boletos/PIX de um billing.
+-- HERANÇA DE QUALIDADE
+-- Como esses créditos foram agregados depois do fanout, também podem estar
+-- multiplicados por boleto/PIX.
 -- ============================================================================
 
 CREATE OR REPLACE TEMP TABLE tmp_farm_paid_credit_metrics AS
@@ -1184,6 +1141,9 @@ FROM tmp_monthly_settlement_aggregates;
 --
 -- O QUE FAZ
 -- Reproduz os três meses codificados diretamente na view original.
+--
+-- PROBLEMA CONHECIDO
+-- A lista não avança automaticamente para novos períodos.
 -- ============================================================================
 
 CREATE OR REPLACE TEMP TABLE tmp_take_rate_reporting_months AS
@@ -1248,9 +1208,8 @@ FROM tmp_monthly_take_rate_bands;
 -- CÁLCULO USADO NO RESULTADO FINAL
 -- desempenho_lemon = creditos_faturados_pagos_kwh / minima_injecao_k_wh.
 --
--- CORREÇÃO FND-004
--- O numerador já está sem fanout e SAFE_DIVIDE garante divisão decimal e
--- proteção para denominador zero.
+-- HERANÇA DE QUALIDADE
+-- O numerador pode estar inflado pelo fanout financial_event.
 -- ============================================================================
 
 CREATE OR REPLACE TEMP TABLE tmp_farm_performance_metrics AS
@@ -1266,30 +1225,24 @@ SELECT
   client.creditos_recebidos_k_wh,
   client.creditos_faturados_k_wh,
   settlement.creditos_faturados_pagos_kwh,
-  SAFE_DIVIDE(
-    farm.creditos_injetados_k_wh,
-    NULLIF(farm.geracao_prevista_no_contrato_k_wh, 0)
-  ) AS injetado_vs_previsto,
-  SAFE_DIVIDE(
-    farm.creditos_injetados_k_wh,
-    NULLIF(farm.geracao_realizada_gerador_k_wh, 0)
-  ) AS disco_vs_inversor,
-  SAFE_DIVIDE(
-    client.creditos_recebidos_k_wh,
-    NULLIF(farm.creditos_injetados_k_wh, 0)
-  ) AS recebidos_vs_injetados,
-  SAFE_DIVIDE(
-    client.creditos_faturados_k_wh,
-    NULLIF(client.creditos_recebidos_k_wh, 0)
-  ) AS faturados_vs_recebidos,
-  SAFE_DIVIDE(
-    client.creditos_faturados_k_wh,
-    NULLIF(farm.minima_injecao_k_wh, 0)
-  ) AS preenchimento_usina,
-  SAFE_DIVIDE(
-    settlement.creditos_faturados_pagos_kwh,
-    NULLIF(farm.minima_injecao_k_wh, 0)
-  ) AS desempenho_lemon
+  farm.creditos_injetados_k_wh
+    / NULLIF(farm.geracao_prevista_no_contrato_k_wh, 0)
+      AS injetado_vs_previsto,
+  farm.creditos_injetados_k_wh
+    / NULLIF(farm.geracao_realizada_gerador_k_wh, 0)
+      AS disco_vs_inversor,
+  client.creditos_recebidos_k_wh
+    / NULLIF(farm.creditos_injetados_k_wh, 0)
+      AS recebidos_vs_injetados,
+  client.creditos_faturados_k_wh
+    / NULLIF(client.creditos_recebidos_k_wh, 0)
+      AS faturados_vs_recebidos,
+  client.creditos_faturados_k_wh
+    / NULLIF(farm.minima_injecao_k_wh, 0)
+      AS preenchimento_usina,
+  settlement.creditos_faturados_pagos_kwh
+    / NULLIF(farm.minima_injecao_k_wh, 0)
+      AS desempenho_lemon
 FROM tmp_farm_generation_metrics AS farm
 LEFT JOIN tmp_farm_client_credit_metrics AS client
   ON client.usina = farm.usina
@@ -1358,8 +1311,7 @@ CREATE OR REPLACE TEMP TABLE tmp_monthly_farm_tusd AS
 SELECT
   usina,
   SAFE_CAST(mes_de_desconto_tusd_gerador AS DATE) AS mes_referencia,
-  SUM(SAFE_CAST(tusd_descontada_gerador AS NUMERIC))
-    AS tusd_descontada_gerador
+  SUM(tusd_descontada_gerador) AS tusd_descontada_gerador
 FROM `lemon-ae-case.raw.energy_farms`
 WHERE
   mes_referencia = '2025-01-01'
@@ -1400,8 +1352,10 @@ LEFT JOIN tmp_selected_performance_metrics AS performance
 -- Seleciona as 22 colunas da generator_report e calcula os repasses finais.
 --
 -- IMPORTANTE
--- Esta temporária preserva o contrato de 22 colunas do relatório, mas recebe
--- medidas corrigidas nos quatro pontos upstream descritos no cabeçalho.
+-- Esta temporária reproduz intencionalmente o fanout e as demais regras da
+-- versão de paridade com a lógica original. Ela é um artefato de diagnóstico,
+-- não a proposta de
+-- produto de dados corrigido.
 -- ============================================================================
 
 CREATE OR REPLACE TEMP TABLE tmp_final_result AS
@@ -1422,20 +1376,14 @@ SELECT
   receita_multas_brl,
   desempenho_lemon,
   tr_performado,
-  receita_bruta_gerador_brl
-    * (NUMERIC '1' - SAFE_CAST(tr_performado AS NUMERIC))
+  receita_bruta_gerador_brl * (1 - tr_performado)
     AS repasse_pre_tusd_gerador,
   tusd_descontada_gerador,
-  receita_bruta_gerador_brl
-    * (NUMERIC '1' - SAFE_CAST(tr_performado AS NUMERIC))
+  receita_bruta_gerador_brl * (1 - tr_performado)
     - tusd_descontada_gerador AS repasse_gerador,
-  receita_multas_brl * SAFE_CAST(tr_performado AS NUMERIC)
-    AS repasse_multas_lemon,
-  receita_multas_brl
-    * (NUMERIC '1' - SAFE_CAST(tr_performado AS NUMERIC))
-    AS repasse_multas_gerador,
-  receita_bruta_gerador_brl * SAFE_CAST(tr_performado AS NUMERIC)
-    AS repasse_lemon
+  receita_multas_brl * tr_performado AS repasse_multas_lemon,
+  receita_multas_brl * (1 - tr_performado) AS repasse_multas_gerador,
+  receita_bruta_gerador_brl * tr_performado AS repasse_lemon
 FROM tmp_report_enriched_base
 WHERE
   gerador IS NOT NULL;
@@ -1456,93 +1404,44 @@ WHERE
 
 
 CREATE OR REPLACE TABLE
-  `lemon-ae-case.validation.generator_report_corrected_temp_tables`
+  `lemon-ae-case.validation.generator_report_formatado_em_temp_tables_result`
 AS
 SELECT
   *
 FROM tmp_final_result;
 
--- ============================================================================
--- VALIDAÇÕES OPCIONAIS DA VERSÃO CORRIGIDA
--- ============================================================================
-
--- 1. O resultado deve possuir uma linha por gerador × usina × disco × mês.
--- SELECT
---   gerador,
---   usina,
---   disco,
---   mes_referencia,
---   COUNT(*) AS quantidade_linhas
--- FROM tmp_final_result
--- GROUP BY 1, 2, 3, 4
--- HAVING COUNT(*) > 1;
-
--- 2. Inspeção direta do caso usado no diagnóstico do fanout.
--- SELECT
---   gerador,
---   usina,
---   mes_referencia,
---   cobranca_gerador_mes,
---   valor_liquidado_gerador_mes,
---   receita_multas_brl,
---   desempenho_lemon,
---   tr_performado,
---   repasse_lemon
--- FROM tmp_final_result
--- WHERE usina = 'Usina29';
-
--- 3. Mostra quanto cada ponto upstream mudou em relação ao legado.
--- SELECT
---   COALESCE(corrected.gerador, legacy.gerador) AS gerador,
---   COALESCE(corrected.usina, legacy.usina) AS usina,
---   COALESCE(corrected.disco, legacy.disco) AS disco,
---   COALESCE(corrected.mes_referencia, legacy.mes_referencia)
---     AS mes_referencia,
---   legacy.cobranca_gerador_mes AS cobranca_legado,
---   corrected.cobranca_gerador_mes AS cobranca_corrigida,
---   corrected.cobranca_gerador_mes - legacy.cobranca_gerador_mes
---     AS diferenca_cobranca,
---   legacy.valor_liquidado_gerador_mes AS liquidado_gerador_legado,
---   corrected.valor_liquidado_gerador_mes AS liquidado_gerador_corrigido,
---   corrected.valor_liquidado_gerador_mes
---     - legacy.valor_liquidado_gerador_mes AS diferenca_liquidado_gerador,
---   legacy.multa_juros_total_recebido_mes AS multa_juros_legado,
---   corrected.multa_juros_total_recebido_mes AS multa_juros_corrigido,
---   corrected.multa_juros_total_recebido_mes
---     - legacy.multa_juros_total_recebido_mes AS diferenca_multa_juros,
---   legacy.desempenho_lemon AS desempenho_legado,
---   corrected.desempenho_lemon AS desempenho_corrigido
--- FROM `lemon-ae-case.validation.generator_report_legacy_parity` AS legacy
--- FULL OUTER JOIN
---   `lemon-ae-case.validation.generator_report_corrected_temp_tables` AS corrected
--- USING (gerador, usina, disco, mes_referencia)
--- ORDER BY gerador, usina, mes_referencia;
+CREATE OR REPLACE VIEW
+  `lemon-ae-case.validation.generator_report_formatado_em_temp_tables`
+AS
+SELECT
+  *
+FROM `lemon-ae-case.validation.generator_report_formatado_em_temp_tables_result`;
 
 -- ============================================================================
--- RECONCILIAÇÃO OPCIONAL COM A VIEW CANDIDATA REFATORADA
+-- RECONCILIAÇÃO OPCIONAL COM A VIEW PERSISTENTE
 --
--- Se as duas consultas abaixo não retornarem linhas, esta versão temporária e a
--- view candidata possuem os mesmos registros no nível de comparação exata.
+-- Se as duas consultas abaixo não retornarem linhas, o conjunto temporário e a
+-- view de paridade possuem os mesmos registros no nível de comparação exata.
 -- ============================================================================
 
 -- SELECT
---   'TEMP_MENOS_CANDIDATE' AS origem_diferenca,
+--   'TEMP_MENOS_VIEW' AS origem_diferenca,
 --   diferenca.*
 -- FROM (
 --   SELECT * FROM tmp_final_result
 --   EXCEPT DISTINCT
 --   SELECT *
---   FROM `lemon-ae-case.validation.generator_report_refactored_candidate`
+--   FROM `lemon-ae-case.validation.generator_report_legacy_parity`
 -- ) AS diferenca
 
 -- UNION ALL
 
 -- SELECT
---   'CANDIDATE_MENOS_TEMP' AS origem_diferenca,
+--   'VIEW_MENOS_TEMP' AS origem_diferenca,
 --   diferenca.*
 -- FROM (
 --   SELECT *
---   FROM `lemon-ae-case.validation.generator_report_refactored_candidate`
+--   FROM `lemon-ae-case.validation.generator_report_legacy_parity`
 --   EXCEPT DISTINCT
 --   SELECT * FROM tmp_final_result
 -- ) AS diferenca;

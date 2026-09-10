@@ -31,6 +31,7 @@ flowchart TB
         TRUSTED[trusted<br/>11 tabelas e 11 procedures]
         REFINED[refined<br/>relatorio_gerador_mensal]
         VIEW[View de apresentação]
+        VALIDATION[validation<br/>comparação e diagnóstico]
     end
 
     subgraph CICD[CI/CD]
@@ -40,6 +41,7 @@ flowchart TB
     AIRFLOW[Airflow<br/>evolução planejada]
 
     URL --> SECRET --> FUNCTION --> LANDING --> JOB --> RAW --> TRUSTED --> REFINED --> VIEW
+    RAW -. engenharia reversa .-> VALIDATION
     BUILD --> FUNCTION
     BUILD --> JOB
     BUILD -->|publica DDLs e procedures| TRUSTED
@@ -50,8 +52,8 @@ flowchart TB
     AIRFLOW -. CALL ordenado .-> REFINED
 ```
 
-As setas contínuas representam componentes e fluxos implementados. As setas
-tracejadas representam a orquestração planejada, fora do escopo da entrega.
+As setas contínuas representam os componentes e fluxos implementados. As setas
+tracejadas identificam a evolução de orquestração prevista com Airflow.
 
 ## Fluxo de dados
 
@@ -121,16 +123,27 @@ transação.
 A view versionada `refined.vw_relatorio_gerador_apresentacao` fornece uma saída
 enxuta, com percentuais na escala de 0 a 100 e repasses consolidados.
 
+### 6. Validação e entendimento
+
+`sql/validation` preserva o SQL original do SQLite e três representações usadas
+na engenharia reversa: legado passo a passo, candidato refatorado e versão
+corrigida passo a passo. Esses objetos comprovam o caminho de análise, mas não
+competem com o contrato final da Refined.
+
+Os resultados persistentes de comparação usam o dataset `validation`; scripts
+com tabelas temporárias devem ser executados como uma única sessão no BigQuery.
+
 ## Organização no BigQuery
 
 ```text
 Projeto: lemon-ae-case
 ├── raw: 8 tabelas
 ├── trusted: 11 tabelas + 11 stored procedures
-└── refined
+├── refined
     ├── relatorio_gerador_mensal
     ├── sp_carregar_relatorio_gerador_mensal
     └── vw_relatorio_gerador_apresentacao
+└── validation: artefatos de paridade e diagnóstico
 ```
 
 ## CI/CD: deploy não é execução
@@ -147,9 +160,8 @@ associados à branch e aos caminhos correspondentes.
 | `cloudbuild-ddl-refined.yaml` | Executa os DDLs de `sql/ddl/refined` |
 | `cloudbuild-procedures-refined.yaml` | Cria ou atualiza as procedures Refined |
 
-Implantar uma procedure não equivale a executá-la. Os pipelines SQL registram
-o código no BigQuery, mas não fazem `CALL`. Nesta entrega, as cargas são
-executadas manualmente e devem respeitar a ordem registrada no runbook.
+Os pipelines SQL registram as procedures no BigQuery sem executar `CALL`. A
+operação atual executa as cargas manualmente, na ordem registrada no runbook.
 
 ## Identidades
 
@@ -175,6 +187,8 @@ pelo Google Cloud, com acessos no menor escopo possível.
 - Não há DAG, agendamento, retry coordenado ou SLA ponta a ponta.
 - A view está em `sql/view/refined`, mas não participa dos quatro pipelines SQL
   atuais e precisa de publicação explícita.
+- Os scripts de `sql/validation` são executados sob demanda e não fazem parte da
+  carga operacional Raw → Trusted → Refined.
 
 ## Evoluções planejadas
 

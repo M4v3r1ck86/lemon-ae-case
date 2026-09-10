@@ -1,4 +1,6 @@
 -- BigQuery / GoogleSQL
+-- Etapa 3 da validação: versão candidata com correções técnicas identificadas
+-- durante a engenharia reversa. Não representa o produto Refined final.
 -- Versao refatorada e tecnicamente corrigida do generator_report.
 --
 -- Esta view e uma candidata de validacao. Ela nao deve substituir a versao

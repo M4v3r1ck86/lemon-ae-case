@@ -12,10 +12,11 @@ URL da fonte e credenciais não devem aparecer em comandos, logs ou commits.
 | Job SQLite → Raw | `lemon-sqlite-to-raw` |
 | Landing / segredo | `lemon-ae-case-ingestion-landing` / `lemon-source-db-url` |
 | Artifact Registry | `lemon-data-pipelines` |
-| Datasets | `raw`, `trusted`, `refined` |
+| Datasets | `raw`, `trusted`, `refined`, `validation` |
 | Raw | 8 tabelas |
 | Trusted | 11 tabelas e 11 procedures |
 | Refined | 1 tabela, 1 procedure e 1 view versionada |
+| Validation | Scripts de paridade, candidatos e diagnóstico executados sob demanda |
 
 ## Preparação
 

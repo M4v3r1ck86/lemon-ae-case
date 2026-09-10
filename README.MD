@@ -1,195 +1,189 @@
 # Lemon Generator Report
 
-Solução do case de Analytics Engineering da Lemon Energia para construir um
-produto de dados a partir da engenharia reversa da view `generator_report`.
+Produto de dados desenvolvido para o case de Analytics Engineering da Lemon.
+A solução parte do SQLite disponibilizado no endpoint do desafio, preserva a
+fonte, organiza as informações em uma arquitetura Medallion e publica o
+Relatório do Gerador em um contrato simples para consumo analítico.
 
-O projeto preserva o arquivo SQLite original, carrega suas oito tabelas na
-camada `raw` do BigQuery e prepara a base para as transformações `trusted` e
-`refined` que responderão às perguntas analíticas do case.
+## Produto entregue
 
-## Estado atual
+O produto principal é:
 
-| Componente | Estado |
-|---|---|
-| Ingestão HTTP da fonte | Implementado, testado e implantado |
-| Preservação imutável no Cloud Storage | Implementado e validado |
-| CI/CD da ingestão | Implementado e validado |
-| Dataset `raw` no BigQuery | Criado |
-| Loader SQLite → `raw` | Implementado e testado localmente |
-| Container e CI/CD do Raw Loader | Em implantação |
-| Camadas `trusted` e `refined` | Planejadas |
-| Orquestração ponta a ponta | Evolução futura |
+```text
+refined.relatorio_gerador_mensal
+```
 
-## Arquitetura
+Seu grain é uma linha por gerador, usina, distribuidora e mês de referência. A
+view `refined.vw_relatorio_gerador_apresentacao` seleciona e formata as métricas
+necessárias para visualização, sem alterar o grain do produto.
+
+O produto responde, entre outras, às seguintes perguntas:
+
+- quanto foi cobrado e liquidado para cada gerador;
+- qual foi o desempenho mensal de cada usina;
+- qual faixa de take rate foi aplicada;
+- quanto pertence à Lemon e quanto deve ser repassado ao gerador;
+- quanto foi descontado de TUSD;
+- quanto de multa e juros pertence a cada parte.
+
+Veja o contrato completo em [Produto de dados](docs/data_product.md).
+
+## Arquitetura implementada
 
 ```mermaid
 flowchart LR
-    A[URL HTTPS protegida<br/>Secret Manager]
-    B[Cloud Run Function<br/>lemon-source-ingestion]
-    C[Cloud Storage landing<br/>SQLite imutável]
-    D[Cloud Run Job<br/>lemon-sqlite-to-raw]
+    A[Endpoint HTTPS<br/>publicado no Notion]
+    B[Cloud Run Function<br/>source_ingestion]
+    C[Cloud Storage<br/>landing imutável]
+    D[Cloud Run Job<br/>sqlite_to_raw]
     E[BigQuery<br/>raw]
-    F[Dataform<br/>trusted]
-    G[Dataform<br/>refined]
-    H[Relatório do gerador]
+    F[BigQuery<br/>trusted]
+    G[BigQuery<br/>refined]
+    H[View de apresentação]
 
-    A --> B
-    B -->|valida, calcula SHA-256 e preserva| C
-    C -->|snapshot selecionado| D
+    A -->|URL protegida no Secret Manager| B
+    B -->|valida e identifica por SHA-256| C
+    C --> D
     D -->|8 tabelas + _ingested_at| E
-    E -. próximo incremento .-> F
-    F -. próximo incremento .-> G
-    G -.-> H
+    E -->|tipagem e padronização| F
+    F -->|métricas e regras finais| G
+    G --> H
 ```
 
-As responsabilidades foram separadas deliberadamente:
+### Responsabilidades
 
-- a Cloud Run Function recebe a requisição e preserva a fonte;
-- o Cloud Run Job executa uma carga batch finita e encerra;
-- o BigQuery armazena as camadas analíticas;
-- o Dataform será responsável somente pelas transformações SQL.
+- `functions/source_ingestion`: baixa, valida e preserva o SQLite na landing;
+- `jobs/sqlite_to_raw`: lê a landing e materializa as oito tabelas Raw;
+- `sql/ddl` e `sql/procedures`: definem e carregam Trusted e Refined;
+- `sql/view/refined`: expõe a visão de apresentação do produto;
+- `sql/validation`: preserva a engenharia reversa e as versões de comparação;
+- `docs`: registra descoberta, contratos, arquitetura e operação.
 
-O bucket de landing não é a camada `raw`. Ele preserva os bytes originais para
-auditoria e replay; `raw` começa quando as tabelas são materializadas no
-BigQuery.
+A landing preserva os bytes originais; a camada Raw começa somente quando as
+tabelas são materializadas no BigQuery.
 
-## Organização dos dados
+## Camadas de dados
 
-O BigQuery usa a hierarquia `projeto.dataset.tabela`. Para o escopo do case, o
-projeto e o dataset são:
+| Camada | Papel | Estado |
+|---|---|---|
+| Landing | Preservação imutável do SQLite por SHA-256 | Implementada e validada |
+| Raw | Oito tabelas com nomes da fonte e `_ingested_at` | Implementada e carregada |
+| Trusted | Tipagem, nomenclatura, deduplicação e integração | 11 tabelas e 11 procedures |
+| Refined | Métricas, take rate, receitas e repasses | Tabela, procedure e view implementadas |
+| Validation | Paridade, diagnóstico e candidatos da engenharia reversa | Artefatos SQL de apoio |
 
-```text
-lemon-ae-case.raw
+## Engenharia reversa e validação
+
+Os quatro scripts em `sql/validation` contam uma única sequência:
+
+```mermaid
+flowchart LR
+    ORIGINAL[01 · SQL original<br/>SQLite]
+    LEGACY[02 · Legado<br/>passo a passo]
+    CANDIDATE[03 · Candidato<br/>refatorado]
+    CORRECTED[04 · Versão corrigida<br/>passo a passo]
+    MODEL[Modelo Trusted]
+    PRODUCT[Produto Refined]
+
+    ORIGINAL --> LEGACY --> CANDIDATE --> CORRECTED --> MODEL --> PRODUCT
 ```
 
-Os domínios já estão explícitos nos nomes fornecidos pela origem:
+Eles demonstram como a view foi compreendida, quais problemas técnicos foram
+encontrados e como a proposta final foi alcançada. Não representam quatro
+produtos concorrentes. Veja [Validação e entendimento](docs/validation/README.md).
 
-```text
-energy_clients
-energy_farms
-energy_generator_take_rates
-finance_billings
-finance_boletos
-finance_charges
-finance_pixs
-finance_relations
-```
+## Princípios da solução
 
-O loader preserva os nomes e colunas da fonte e acrescenta somente
-`_ingested_at TIMESTAMP`. Cada execução usa `WRITE_TRUNCATE`, reconstruindo o
-estado da camada `raw` a partir do snapshot imutável selecionado.
-
-## Principais decisões
-
-- **Fonte imutável:** o SHA-256 do conteúdo compõe o caminho no Cloud Storage.
-- **Idempotência na landing:** `if_generation_match=0` impede sobrescrita.
-- **Segredo fora do Git:** a URL HTTPS é lida do Secret Manager.
-- **Identidades dedicadas:** ingestão, carga raw e implantação usam contas de
-  serviço distintas e permissões com o menor escopo prático.
-- **Componentes independentes:** cada unidade implantável possui suas próprias
-  dependências, testes e processo de build.
-- **Carga previsível:** o schema do BigQuery é derivado dos tipos declarados no
-  SQLite, sem autodetecção baseada em amostra.
-- **Sem pandas no loader:** a extração gera NDJSON por streaming, reduzindo o
-  tamanho da imagem e o consumo de memória.
-- **Uma camada por dataset:** neste case, os datasets serão `raw`, `trusted` e
-  `refined`; os domínios permanecem nos nomes das tabelas.
-
-Os detalhes, alternativas consideradas e limites estão em
-[Arquitetura e decisões](docs/architecture.md).
+- fonte preservada de forma idempotente e endereçada por SHA-256;
+- URL do endpoint protegida no Secret Manager;
+- Raw fiel à estrutura física da fonte;
+- nomes e tipos semânticos tratados na Trusted;
+- valores financeiros convertidos de centavos para reais;
+- instrumentos agregados antes dos joins para evitar fanout;
+- faixa de take rate aplicada somente na Refined;
+- SQL, DDLs e procedures versionados no GitHub;
+- implantação automatizada pelo Cloud Build;
+- execução operacional das cargas por acionamento manual;
+- Airflow previsto para a orquestração ponta a ponta.
 
 ## Estrutura do repositório
 
 ```text
 ./
 ├── functions/
-│   └── source_ingestion/
-│       ├── main.py
-│       ├── ingestion_core.py
-│       ├── requirements.txt
-│       └── tests/
-│           └── test.py
+│   └── source_ingestion/         # Endpoint → landing
 ├── jobs/
-│   └── sqlite_to_raw/
-│       ├── main.py
-│       ├── sqlite_loader.py
-│       ├── requirements.txt
-│       ├── Dockerfile
-│       ├── .dockerignore
-│       └── tests/
-│           └── test_sqlite_loader.py
+│   └── sqlite_to_raw/            # Landing → BigQuery Raw
+├── sql/
+│   ├── ddl/
+│   │   ├── trusted/
+│   │   └── refined/
+│   ├── procedures/
+│   │   ├── trusted/
+│   │   └── refined/
+│   ├── validation/               # Engenharia reversa e reconciliação
+│   └── view/
+│       └── refined/              # Contrato de apresentação
 ├── docs/
+│   ├── discovery/
+│   ├── trusted/
+│   ├── refined/
+│   ├── validation/
 │   ├── architecture.md
+│   ├── data_product.md
 │   └── runbook.md
-├── cloudbuild.yaml
-├── cloudbuild-sqlite-to-raw.yaml
-├── .gitignore
-└── README.MD
+└── cloudbuild*.yaml
 ```
 
-Convenções adotadas:
+## CI/CD e execução
 
-- diretórios e módulos Python: `snake_case`;
-- recursos do Google Cloud: `kebab-case`;
-- pipelines adicionais: `cloudbuild-<componente>.yaml`.
+| Pipeline | Destino |
+|---|---|
+| `cloudbuild.yaml` | Cloud Run Function `lemon-source-ingestion` |
+| `cloudbuild-sqlite-to-raw.yaml` | Cloud Run Job `lemon-sqlite-to-raw` |
+| `cloudbuild-ddl-trusted.yaml` | Tabelas Trusted |
+| `cloudbuild-procedures-trusted.yaml` | Procedures Trusted |
+| `cloudbuild-ddl-refined.yaml` | Tabela Refined |
+| `cloudbuild-procedures-refined.yaml` | Procedure Refined |
 
-O arquivo `cloudbuild.yaml` mantém o nome original porque o gatilho de ingestão
-já implantado aponta para ele. O pipeline novo segue o nome explícito
-`cloudbuild-sqlite-to-raw.yaml`.
+```mermaid
+flowchart LR
+    PUSH[Push no GitHub] --> BUILD[Cloud Build]
+    BUILD --> FUNCTION[Implanta a Function]
+    BUILD --> JOB[Implanta o Raw Loader]
+    BUILD --> SQL[Publica DDLs e procedures]
+
+    OPERATOR[Acionamento operacional] --> FUNCTION
+    OPERATOR --> JOB
+    OPERATOR --> CALL[Executa as procedures em ordem]
+    CALL --> TRUSTED[Trusted]
+    TRUSTED --> REFINED[Refined]
+```
+
+O Cloud Build implanta os componentes e publica os objetos SQL. O acionamento
+do Raw Loader e a execução ordenada das stored procedures são operações
+manuais, descritas no [Runbook](docs/runbook.md).
 
 ## Testes locais
-
-Crie um ambiente virtual na raiz do repositório:
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-```
 
-Função de ingestão:
-
-```powershell
 python -m pip install -r functions/source_ingestion/requirements.txt
 python -m unittest discover -s functions/source_ingestion/tests -v
-```
 
-Raw Loader:
-
-```powershell
 python -m pip install -r jobs/sqlite_to_raw/requirements.txt
 python -m unittest discover -s jobs/sqlite_to_raw/tests -v
 ```
 
-O resultado atual esperado é `3` testes da ingestão e `4` testes do loader,
-todos com status `OK`. A pasta `.venv` e os artefatos `__pycache__` são locais e
-não devem ser versionados.
-
-## Implantação
-
-| Pipeline | Origem | Destino |
-|---|---|---|
-| `cloudbuild.yaml` | `functions/source_ingestion` | Cloud Run Function `lemon-source-ingestion` |
-| `cloudbuild-sqlite-to-raw.yaml` | `jobs/sqlite_to_raw` | Cloud Run Job `lemon-sqlite-to-raw` |
-
-O pipeline da função executa testes e faz deploy por código-fonte. O pipeline do
-job executa testes, constrói a imagem pelo `Dockerfile`, publica no Artifact
-Registry `lemon-data-pipelines` e atualiza a definição do Cloud Run Job. O
-deploy do job não inicia a carga automaticamente.
-
-O procedimento reproduzível, os comandos de IAM, as validações operacionais e
-os problemas já corrigidos estão no [Runbook](docs/runbook.md).
-
-## Próximos incrementos
-
-1. Implantar e executar o Raw Loader, validando as oito tabelas no BigQuery.
-2. Versionar a engenharia reversa da view `generator_report`.
-3. Implementar testes e transformações `trusted` no Dataform.
-4. Construir as tabelas e métricas `refined` solicitadas pelo case.
-5. Adicionar observabilidade e uma orquestração ponta a ponta; Airflow é uma
-   opção de evolução, não uma dependência do MVP atual.
-
 ## Documentação
 
+- [Produto de dados](docs/data_product.md)
 - [Arquitetura e decisões](docs/architecture.md)
-- [Runbook, verificações e troubleshooting](docs/runbook.md)
+- [Runbook operacional](docs/runbook.md)
+- [Descoberta das fontes](docs/discovery/)
+- [Catálogo Trusted](docs/trusted/README.md)
+- [Contrato Refined](docs/refined/README.md)
+- [Validação e entendimento](docs/validation/README.md)

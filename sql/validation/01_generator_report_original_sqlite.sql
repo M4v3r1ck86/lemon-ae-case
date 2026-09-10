@@ -1,3 +1,5 @@
+-- Etapa 1 da validação: SQL original extraído do SQLite, preservado sem
+-- conversão para GoogleSQL e sem representar a ingestão técnica da solução.
 CREATE VIEW generator_report as
 WITH
   billings AS (
