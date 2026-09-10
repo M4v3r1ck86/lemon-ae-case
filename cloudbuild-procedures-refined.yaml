@@ -1,0 +1,45 @@
+# Implanta no BigQuery as stored procedures versionadas da camada Refined.
+# O pipeline registra ou atualiza as routines, mas nao executa as cargas.
+steps:
+  - id: implanta-procedures-refined
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+
+        if [[ ! -d "${_PROCEDURES_DIR}" ]]; then
+          echo "Diretorio ${_PROCEDURES_DIR} nao encontrado."
+          exit 1
+        fi
+
+        mapfile -t procedure_files < <(
+          find "${_PROCEDURES_DIR}" -type f -name 'sp_*.sql' -print | sort
+        )
+
+        if [[ "$${#procedure_files[@]}" -eq 0 ]]; then
+          echo "Nenhum arquivo sp_*.sql encontrado em ${_PROCEDURES_DIR}."
+          exit 1
+        fi
+
+        for procedure_file in "$${procedure_files[@]}"; do
+          echo "Implantando $${procedure_file}"
+          bq query \
+            --project_id="${PROJECT_ID}" \
+            --location="${_BQ_LOCATION}" \
+            --use_legacy_sql=false \
+            < "$${procedure_file}"
+        done
+
+substitutions:
+  _PROCEDURES_DIR: sql/procedures/refined
+  _BQ_LOCATION: southamerica-east1
+  _BUILD_SERVICE_ACCOUNT: sa-lemon-bigquery-ddl-deployer@lemon-ae-case.iam.gserviceaccount.com
+
+serviceAccount: projects/${PROJECT_ID}/serviceAccounts/${_BUILD_SERVICE_ACCOUNT}
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 600s
