@@ -14,8 +14,12 @@ CREATE TABLE IF NOT EXISTS `lemon-ae-case.refined.relatorio_gerador_mensal`
 (
   gerador STRING NOT NULL
     OPTIONS(description = 'Nome ou identificador funcional do gerador.'),
+  id_gerador INT64
+    OPTIONS(description = 'Identificador numérico derivado do sufixo do nome do gerador.'),
   usina STRING NOT NULL
     OPTIONS(description = 'Nome ou identificador funcional da usina.'),
+  id_usina INT64
+    OPTIONS(description = 'Identificador numérico derivado do sufixo do nome da usina.'),
   cod_distribuidora STRING NOT NULL
     OPTIONS(description = 'Código ou nome padronizado da distribuidora de energia.'),
   dt_mes_referencia DATE NOT NULL

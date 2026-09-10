@@ -12,7 +12,11 @@ BEGIN
   CREATE TEMP TABLE tmp_desempenho_com_take_rate AS
   SELECT
     desempenho.gerador,
+    SAFE_CAST(REGEXP_EXTRACT(desempenho.gerador, r'(\d+)$') AS INT64)
+      AS id_gerador,
     desempenho.usina,
+    SAFE_CAST(REGEXP_EXTRACT(desempenho.usina, r'(\d+)$') AS INT64)
+      AS id_usina,
     desempenho.cod_distribuidora,
     desempenho.dt_mes_referencia,
     desempenho.qtd_instalacoes,
@@ -74,7 +78,36 @@ BEGIN
   -- ETAPA 3 — CARGA INTEGRAL DA TABELA REFINED
   BEGIN TRANSACTION;
   DELETE FROM `lemon-ae-case.refined.relatorio_gerador_mensal` WHERE TRUE;
-  INSERT INTO `lemon-ae-case.refined.relatorio_gerador_mensal`
+  INSERT INTO `lemon-ae-case.refined.relatorio_gerador_mensal` (
+    gerador,
+    id_gerador,
+    usina,
+    id_usina,
+    cod_distribuidora,
+    dt_mes_referencia,
+    qtd_instalacoes,
+    qtd_creditos_injetados_kwh,
+    qtd_creditos_faturados_kwh,
+    qtd_creditos_faturados_pagos_kwh,
+    qtd_minima_injecao_kwh,
+    perc_desempenho_lemon,
+    id_take_rate,
+    perc_desempenho_min,
+    perc_desempenho_max,
+    perc_take_rate_aplicado,
+    vlr_cobranca_gerador_brl,
+    vlr_liquidado_gerador_brl,
+    vlr_receita_bruta_gerador_brl,
+    vlr_receita_multas_brl,
+    vlr_repasse_pre_tusd_gerador_brl,
+    dt_mes_desconto_tusd_gerador,
+    vlr_tusd_descontada_gerador_brl,
+    vlr_repasse_gerador_brl,
+    vlr_repasse_multas_lemon_brl,
+    vlr_repasse_multas_gerador_brl,
+    vlr_repasse_lemon_brl,
+    processado_em
+  )
   SELECT * FROM tmp_relatorio_gerador;
   COMMIT TRANSACTION;
 END;
