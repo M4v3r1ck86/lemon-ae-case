@@ -2,233 +2,186 @@
 
 ## Contexto
 
-O case parte de um arquivo SQLite disponibilizado por uma URL HTTPS e de uma
-view chamada `generator_report`, cuja lógica deverá ser reproduzida e evoluída
-em uma arquitetura analítica no Google Cloud.
+O case parte de um arquivo SQLite disponibilizado por um endpoint HTTPS na
+página do desafio publicada em Notion. A solução preserva o arquivo original,
+materializa suas oito tabelas no BigQuery e transforma os dados até o relatório
+mensal do gerador.
 
-O desenho separa preservação da fonte, ingestão tabular e transformação
-analítica. Essa separação permite reprocessar o dado original, testar cada
-fronteira isoladamente e evoluir as regras de negócio sem acoplar o endpoint de
-origem ao BigQuery.
+A arquitetura separa preservação, ingestão tabular, padronização e produto de
+dados. Assim, a fonte pode ser auditada e reprocessada, enquanto as regras
+analíticas evoluem como SQL versionado no GitHub.
 
-## Escopo atual
+## Estado atual
 
 ```mermaid
 flowchart TB
     subgraph Source[Origem]
-        URL[URL HTTPS do SQLite]
+        NOTION[Página do case em Notion] --> URL[Endpoint HTTPS do SQLite]
     end
 
-    subgraph Ingestion[Preservação]
-        SECRET[Secret Manager]
+    subgraph Ingestion[Preservação e ingestão]
+        SECRET[Secret Manager<br/>lemon-source-db-url]
         FUNCTION[Cloud Run Function<br/>lemon-source-ingestion]
-        LANDING[Cloud Storage<br/>lemon-ae-case-ingestion-landing]
-    end
-
-    subgraph RawLoad[Ingestão tabular]
+        LANDING[Cloud Storage<br/>landing imutável]
         JOB[Cloud Run Job<br/>lemon-sqlite-to-raw]
-        RAW[BigQuery dataset<br/>raw]
     end
 
-    subgraph Analytics[Próximos incrementos]
-        TRUSTED[Dataform / trusted]
-        REFINED[Dataform / refined]
-        REPORT[generator_report]
+    subgraph BQ[BigQuery]
+        RAW[raw<br/>8 tabelas]
+        TRUSTED[trusted<br/>11 tabelas e 11 procedures]
+        REFINED[refined<br/>relatorio_gerador_mensal]
+        VIEW[View de apresentação]
     end
 
-    URL --> SECRET
-    SECRET --> FUNCTION
-    FUNCTION --> LANDING
-    LANDING --> JOB
-    JOB --> RAW
-    RAW -.-> TRUSTED
-    TRUSTED -.-> REFINED
-    REFINED -.-> REPORT
+    subgraph CICD[CI/CD]
+        GITHUB[GitHub / main] --> BUILD[Cloud Build]
+    end
+
+    AIRFLOW[Airflow<br/>evolução planejada]
+
+    URL --> SECRET --> FUNCTION --> LANDING --> JOB --> RAW --> TRUSTED --> REFINED --> VIEW
+    BUILD --> FUNCTION
+    BUILD --> JOB
+    BUILD -->|publica DDLs e procedures| TRUSTED
+    BUILD -->|publica DDLs e procedures| REFINED
+    AIRFLOW -. futura execução e coordenação .-> FUNCTION
+    AIRFLOW -.-> JOB
+    AIRFLOW -. CALL ordenado .-> TRUSTED
+    AIRFLOW -. CALL ordenado .-> REFINED
 ```
 
-## Componentes e responsabilidades
+As setas contínuas representam componentes e fluxos implementados. As setas
+tracejadas representam a orquestração planejada, fora do escopo da entrega.
 
-### Cloud Run Function: source ingestion
+## Fluxo de dados
 
-Responsável por:
+### 1. Origem
 
-1. receber uma chamada HTTP autenticada;
-2. obter a URL da fonte pelo Secret Manager;
-3. baixar o arquivo por streaming para o filesystem temporário;
-4. limitar o download a 50 MiB;
-5. validar o cabeçalho SQLite e executar `PRAGMA integrity_check`;
-6. calcular o SHA-256 do conteúdo;
-7. criar o objeto imutável no bucket de landing.
+O endereço de download vem do endpoint publicado no site do case, construído
+em Notion. A URL não fica no código: é armazenada no Secret Manager como
+`lemon-source-db-url` e disponibilizada somente à identidade da função.
 
-O uso de `tempfile.TemporaryDirectory` implica armazenamento efêmero,
-normalmente em `/tmp` no Cloud Run. O arquivo local existe apenas durante a
-requisição e não representa uma camada de persistência.
+### 2. Preservação imutável
 
-O caminho determinístico atual é:
+A Cloud Run Function `lemon-source-ingestion` recebe uma chamada autenticada,
+lê a URL no Secret Manager, baixa o arquivo com limite de 50 MiB, valida o
+SQLite, calcula seu SHA-256 e cria o objeto no bucket de landing.
 
 ```text
 gs://lemon-ae-case-ingestion-landing/
 └── generator-report/sqlite/
-    └── sha256=e42e7355e0783525cfb40364f698e8bef86f4b26925178a9316570fb4982dc1b/
+    └── sha256=<HASH_DO_CONTEUDO>/
         └── Lemon_Case_Tecnico_AE.db
 ```
 
-O upload utiliza `if_generation_match=0`. Uma nova chamada com os mesmos bytes
-retorna `already_exists` e não sobrescreve o objeto.
+O bucket preserva bytes e não é a camada Raw. O upload usa
+`if_generation_match=0`; conteúdo repetido retorna `already_exists` e nunca
+sobrescreve o objeto existente.
 
-### Cloud Run Job: SQLite to raw
+### 3. Ingestão tabular na Raw
 
-Responsável por:
+O Cloud Run Job `lemon-sqlite-to-raw` baixa o snapshot, abre o SQLite em modo
+somente leitura, valida sua integridade, gera NDJSON com schema explícito e
+carrega cada tabela com `WRITE_TRUNCATE`. A contagem exportada é comparada com a
+contagem carregada.
 
-1. baixar um snapshot imutável do bucket;
-2. abrir o SQLite em modo somente leitura;
-3. executar `PRAGMA quick_check`;
-4. descobrir tabelas reais em `sqlite_master`, ignorando views e objetos
-   internos;
-5. exigir exatamente oito tabelas;
-6. validar nomes compatíveis com o BigQuery;
-7. gerar NDJSON por streaming com schema explícito;
-8. carregar cada tabela com `WRITE_TRUNCATE`;
-9. comparar a contagem exportada com a contagem carregada.
-
-Todas as exportações locais são preparadas antes do primeiro load no BigQuery.
-Isso impede que um erro de schema descoberto localmente produza uma carga
-parcial. Os oito loads são independentes; atomicidade global entre tabelas é
-uma evolução possível com tabelas de staging e promoção controlada.
-
-O job possui uma única task e não atende HTTP. Implantar ou atualizar o job não
-executa a carga.
-
-## Contrato da camada raw
-
-As oito tabelas esperadas são:
-
-| Domínio | Tabelas |
+| Domínio | Tabelas Raw |
 |---|---|
-| Energy | `energy_clients`, `energy_farms`, `energy_generator_take_rates` |
-| Finance | `finance_billings`, `finance_boletos`, `finance_charges`, `finance_pixs`, `finance_relations` |
+| Energia | `energy_clients`, `energy_farms`, `energy_generator_take_rates` |
+| Financeiro | `finance_billings`, `finance_boletos`, `finance_charges`, `finance_pixs`, `finance_relations` |
 
-Os nomes das tabelas e colunas da fonte são preservados. O único metadado
-adicionado ao conteúdo é `_ingested_at TIMESTAMP`, igual para todas as linhas de
-uma execução.
+A Raw preserva nomes e tipos físicos da fonte e acrescenta somente
+`_ingested_at TIMESTAMP`. Datas textuais continuam como `STRING`; a conversão
+semântica pertence à Trusted.
 
-Mapeamento dos tipos declarados no SQLite:
+### 4. Padronização na Trusted
 
-| SQLite | BigQuery |
+O dataset `trusted` está criado e possui DDLs e procedures versionados. A camada
+converte tipos, padroniza nomes e textos, converte centavos para reais,
+deduplica registros e cria entidades integradas.
+
+| Grupo | Tabelas Trusted |
 |---|---|
-| `INTEGER` | `INTEGER` |
-| `REAL`, `FLOAT`, `DOUBLE` | `FLOAT` |
-| `BOOLEAN` | `BOOLEAN` |
-| `NUMERIC`, `DECIMAL` | `NUMERIC` |
-| `BLOB` | `BYTES` |
-| Demais tipos | `STRING` |
+| Energia | `cliente_energia_mensal`, `usina_energia_mensal`, `faixa_take_rate_gerador` |
+| Financeiro | `boleto`, `pix`, `cobranca`, `faturamento`, `relacao_financeira` |
+| Integração | `instrumento_pagamento`, `faturamento_cliente_mensal`, `desempenho_usina_mensal` |
 
-Campos de data e hora declarados como texto continuam como `STRING` na `raw`.
-A interpretação semântica e conversão para `DATE`, `DATETIME` ou `TIMESTAMP`
-pertencem à camada `trusted`.
+As 11 cargas usam full refresh transacional por tabela. As entidades integradas
+agregam e relacionam dados antes da deduplicação defensiva. O catálogo completo
+está em [`docs/trusted/README.md`](trusted/README.md).
+
+### 5. Produto de dados na Refined
+
+O dataset `refined` está criado. A tabela
+`refined.relatorio_gerador_mensal` possui uma linha por gerador, usina,
+distribuidora e mês. Sua procedure associa a faixa de take rate válida, calcula
+receitas e repasses, aplica o desconto de TUSD e substitui o conteúdo em uma
+transação.
+
+A view versionada `refined.vw_relatorio_gerador_apresentacao` fornece uma saída
+enxuta, com percentuais na escala de 0 a 100 e repasses consolidados.
 
 ## Organização no BigQuery
 
-Para o case, a organização é orientada por camada:
-
 ```text
-Projeto GCP: lemon-ae-case
-├── Dataset: raw
-├── Dataset: trusted  (planejado)
-└── Dataset: refined  (planejado)
+Projeto: lemon-ae-case
+├── raw: 8 tabelas
+├── trusted: 11 tabelas + 11 stored procedures
+└── refined
+    ├── relatorio_gerador_mensal
+    ├── sp_carregar_relatorio_gerador_mensal
+    └── vw_relatorio_gerador_apresentacao
 ```
 
-Não existem datasets aninhados no BigQuery. Os domínios `energy` e `finance`
-permanecem nos prefixos das tabelas. Um dataset separado só se justifica quando
-houver diferença real de acesso, proprietário, localização, retenção ou ciclo
-de vida.
+## CI/CD: deploy não é execução
 
-Em uma plataforma corporativa maior, uma alternativa seria representar a
-camada em projetos distintos, por exemplo `lemon-data-raw-prod`, e representar
-os domínios como datasets. Essa complexidade não é necessária para o escopo do
-case.
+Alterações enviadas ao GitHub são processadas pelos gatilhos do Cloud Build
+associados à branch e aos caminhos correspondentes.
 
-## Identidades e acessos
+| Arquivo | Responsabilidade |
+|---|---|
+| `cloudbuild.yaml` | Testa e implanta a função de ingestão |
+| `cloudbuild-sqlite-to-raw.yaml` | Testa, constrói e publica a imagem; cria ou atualiza o Cloud Run Job |
+| `cloudbuild-ddl-trusted.yaml` | Executa os DDLs de `sql/ddl/trusted` |
+| `cloudbuild-procedures-trusted.yaml` | Cria ou atualiza as procedures Trusted |
+| `cloudbuild-ddl-refined.yaml` | Executa os DDLs de `sql/ddl/refined` |
+| `cloudbuild-procedures-refined.yaml` | Cria ou atualiza as procedures Refined |
 
-Nenhuma chave JSON de conta de serviço é criada. Os componentes usam
-Application Default Credentials fornecidas pelo ambiente do Google Cloud.
+Implantar uma procedure não equivale a executá-la. Os pipelines SQL registram
+o código no BigQuery, mas não fazem `CALL`. Nesta entrega, as cargas são
+executadas manualmente e devem respeitar a ordem registrada no runbook.
 
-| Identidade | Finalidade | Acessos de dados |
-|---|---|---|
-| `sa-lemon-source-ingestion` | Executar a função de ingestão | `Storage Object Creator` no bucket de landing e `Secret Manager Secret Accessor` no segredo da URL |
-| `sa-lemon-raw-loader` | Executar o job de carga | `Storage Object Viewer` no bucket, `BigQuery Job User` no projeto e `BigQuery Data Editor` somente no dataset `raw` |
-| `sa-lemon-cloud-build-deployer` | Testar, construir e implantar | escrita no repositório `lemon-data-pipelines`, administração de deploy no Cloud Run e permissão para usar as duas identidades de runtime |
+## Identidades
 
-A Default Compute Service Account foi criada automaticamente pelo Google
-Cloud, mas não é a identidade escolhida para os componentes da solução.
+| Identidade | Responsabilidade |
+|---|---|
+| `sa-lemon-source-ingestion` | Ler o segredo e criar objetos na landing |
+| `sa-lemon-raw-loader` | Ler a landing e carregar o dataset Raw |
+| `sa-lemon-cloud-build-deployer` | Testar, construir e implantar função e job |
+| `sa-lemon-bigquery-ddl-deployer` | Publicar DDLs e procedures no BigQuery |
 
-## Repositórios de imagens
+Nenhuma chave JSON é necessária. Os componentes usam as credenciais fornecidas
+pelo Google Cloud, com acessos no menor escopo possível.
 
-Existem dois repositórios Docker com finalidades distintas:
+## Decisões e limites atuais
 
-| Repositório | Origem | Uso |
-|---|---|---|
-| `cloud-run-source-deploy` | Criado automaticamente pelo Cloud Run | Imagens produzidas pelo deploy por código-fonte da função |
-| `lemon-data-pipelines` | Criado explicitamente para o case | Imagens Docker versionadas dos jobs de dados |
-
-O primeiro apareceu quando `gcloud run deploy --source` foi executado. Esse
-comando usa Cloud Build/Buildpacks e cria `cloud-run-source-deploy` quando o
-repositório regional ainda não existe. Ele não deve ser confundido com o
-repositório explícito do Raw Loader.
-
-A verificação paga de vulnerabilidades está desativada no MVP. Em produção,
-ela pode ser ativada junto com política de retenção e bloqueio de imagens com
-vulnerabilidades críticas.
-
-## CI/CD
-
-### Source ingestion
-
-O gatilho `deploy-lemon-source-ingestion` acompanha a branch `main` e usa
-`cloudbuild.yaml`. O pipeline executa testes e implanta a função. O comando de
-deploy informa explicitamente a conta usada no build interno para evitar
-fallback para a Default Compute Service Account.
-
-### SQLite to raw
-
-O pipeline `cloudbuild-sqlite-to-raw.yaml`:
-
-1. executa os testes do loader;
-2. constrói a imagem pelo `Dockerfile`;
-3. publica a tag associada ao commit no `lemon-data-pipelines`;
-4. cria ou atualiza `lemon-sqlite-to-raw`;
-5. não executa o job automaticamente.
-
-O gatilho específico do Raw Loader será filtrado para alterações em
-`jobs/sqlite_to_raw/**` e no próprio arquivo do pipeline.
-
-## Limites e parâmetros atuais
-
-| Parâmetro | Valor |
-|---|---:|
-| Região | `southamerica-east1` |
-| Download máximo da fonte | 50 MiB |
-| Timeout da função | 300 s |
-| Concorrência da função | 1 |
-| Máximo de instâncias da função | 1 |
-| Tabelas esperadas no SQLite | 8 |
-| Tasks do Raw Loader | 1 |
-| Paralelismo do Raw Loader | 1 |
-| Retry do Raw Loader | 1 |
-| Timeout da task | 600 s |
-| CPU / memória do Raw Loader | 1 vCPU / 1 GiB |
-
-Esses valores são adequados ao arquivo atual de aproximadamente 5,2 MB. Antes
-de ampliar volume ou frequência, devem ser revistos com métricas reais de
-tempo, memória e custo.
+- O SQLite é imutável e endereçado por SHA-256.
+- A landing preserva bytes; a Raw começa na materialização tabular.
+- A Raw evita interpretação semântica; conversões pertencem à Trusted.
+- DDL, publicação de procedure e execução da procedure são etapas distintas.
+- As cargas são full refresh e transacionais por tabela, não uma transação
+  única entre todas as camadas.
+- Os oito loads Raw são independentes; não há promoção atômica global.
+- Não há DAG, agendamento, retry coordenado ou SLA ponta a ponta.
+- A view está em `sql/view/refined`, mas não participa dos quatro pipelines SQL
+  atuais e precisa de publicação explícita.
 
 ## Evoluções planejadas
 
-- transformar e testar os tipos semânticos na `trusted`;
-- reproduzir a lógica da `generator_report` no Dataform;
-- construir a camada `refined` e as análises solicitadas;
-- aplicar labels nas tabelas para camada, fonte e domínio;
-- introduzir staging para promoção atômica das oito tabelas, se necessário;
-- adicionar alertas e retenção de imagens;
-- orquestrar o fluxo completo. Airflow é uma opção futura, após o fluxo manual
-  estar validado e suas dependências estarem claras.
+A principal evolução é um DAG no Airflow para acionar a ingestão, aguardar o
+Raw Loader, chamar as procedures Trusted em ordem, carregar a Refined e aplicar
+validações. O DAG também deverá fornecer retries, alertas, observabilidade e
+histórico das execuções.
+
+Também ficam planejados staging com promoção atômica da Raw, testes automáticos
+pós-carga, políticas de retenção e um pipeline dedicado às views versionadas.

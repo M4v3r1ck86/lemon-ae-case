@@ -1,24 +1,23 @@
-# Runbook, verificações e troubleshooting
+# Runbook operacional
 
-Este documento registra como reproduzir e operar o incremento atual. Os
-comandos não contêm a URL assinada da fonte nem credenciais persistentes.
+Este documento descreve como implantar, executar e verificar o fluxo atual. A
+URL da fonte e credenciais não devem aparecer em comandos, logs ou commits.
 
 ## Inventário
 
-| Recurso | Valor |
+| Recurso | Valor atual |
 |---|---|
-| Projeto | `lemon-ae-case` |
-| Região | `southamerica-east1` |
-| Função/serviço | `lemon-source-ingestion` |
-| Job | `lemon-sqlite-to-raw` |
-| Bucket | `lemon-ae-case-ingestion-landing` |
-| Dataset | `raw` |
-| Segredo | `lemon-source-db-url` |
-| Artifact Registry do job | `lemon-data-pipelines` |
+| Projeto / região | `lemon-ae-case` / `southamerica-east1` |
+| Função de ingestão | `lemon-source-ingestion` |
+| Job SQLite → Raw | `lemon-sqlite-to-raw` |
+| Landing / segredo | `lemon-ae-case-ingestion-landing` / `lemon-source-db-url` |
+| Artifact Registry | `lemon-data-pipelines` |
+| Datasets | `raw`, `trusted`, `refined` |
+| Raw | 8 tabelas |
+| Trusted | 11 tabelas e 11 procedures |
+| Refined | 1 tabela, 1 procedure e 1 view versionada |
 
-## Preparação do Cloud Shell
-
-Confirme a conta e o projeto ativos antes de executar comandos administrativos:
+## Preparação
 
 ```bash
 gcloud auth list
@@ -26,76 +25,47 @@ gcloud config set account "<USER_EMAIL>"
 gcloud config set project "lemon-ae-case"
 ```
 
-## Testes locais
+Confirme que o segredo, o bucket, os datasets e as contas de serviço existem.
+A região dos jobs e a localização do BigQuery devem ser compatíveis.
 
-No PowerShell, a partir da raiz do repositório:
+## Pipelines do Cloud Build
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
+| Arquivo | Ações | Executa carga? |
+|---|---|---:|
+| `cloudbuild.yaml` | Testa e implanta `lemon-source-ingestion` com variáveis, segredo e contas de runtime/build | Não |
+| `cloudbuild-sqlite-to-raw.yaml` | Testa o loader, constrói e publica a imagem `${SHORT_SHA}` e implanta `lemon-sqlite-to-raw` | Não |
+| `cloudbuild-ddl-trusted.yaml` | Ordena e executa `sql/ddl/trusted/ddl_*.sql` | Não |
+| `cloudbuild-procedures-trusted.yaml` | Cria ou substitui as procedures de `sql/procedures/trusted` | Não |
+| `cloudbuild-ddl-refined.yaml` | Executa os DDLs de `sql/ddl/refined` | Não |
+| `cloudbuild-procedures-refined.yaml` | Cria ou substitui as procedures de `sql/procedures/refined` | Não |
+
+Os gatilhos acompanham os pushes e caminhos configurados no GitHub. Um build
+verde confirma que o artefato foi publicado; não significa que os dados foram
+recarregados. Os pipelines de procedures não executam `CALL`, e o pipeline do
+job não usa `--execute-now`.
+
+Os DDLs usam `CREATE TABLE IF NOT EXISTS`. Alterar um DDL não modifica uma
+tabela já existente; mudanças de schema exigem uma migração SQL explícita.
+
+### View de apresentação
+
+`sql/view/refined/vw_relatorio_gerador_apresentacao.sql` não é incluído pelos
+pipelines SQL atuais. Enquanto não houver um pipeline de views:
+
+```bash
+bq query \
+  --project_id="lemon-ae-case" \
+  --location="southamerica-east1" \
+  --use_legacy_sql=false \
+  < sql/view/refined/vw_relatorio_gerador_apresentacao.sql
 ```
 
-### Source ingestion
+## Execução ponta a ponta
 
-```powershell
-python -m pip install -r functions/source_ingestion/requirements.txt
-python -m unittest discover -s functions/source_ingestion/tests -v
-```
+### 1. Preservar a origem
 
-Resultado esperado:
-
-```text
-Ran 3 tests
-OK
-```
-
-### SQLite to raw
-
-```powershell
-python -m pip install -r jobs/sqlite_to_raw/requirements.txt
-python -m unittest discover -s jobs/sqlite_to_raw/tests -v
-```
-
-Resultado esperado:
-
-```text
-Ran 4 tests
-OK
-```
-
-## Source ingestion
-
-### Configuração do runtime
-
-| Campo | Valor |
-|---|---|
-| Nome | `lemon-source-ingestion` |
-| Runtime | Python 3.14 |
-| Base | `google-24-full/python314` |
-| Entry point | `ingest_source_database` |
-| Runtime SA | `sa-lemon-source-ingestion@lemon-ae-case.iam.gserviceaccount.com` |
-| Memória | 512 MiB |
-| Timeout | 300 s |
-| Concorrência | 1 |
-| Instâncias | 0–1 |
-| Autenticação | Obrigatória |
-
-Variáveis não sensíveis:
-
-```text
-LANDING_BUCKET=lemon-ae-case-ingestion-landing
-OBJECT_PREFIX=generator-report/sqlite
-MAX_FILE_SIZE_BYTES=52428800
-```
-
-Variável proveniente do Secret Manager:
-
-```text
-SOURCE_DB_URL=lemon-source-db-url:latest
-```
-
-### Teste de integração
+A função lê no Secret Manager o endpoint fornecido pela página do case em
+Notion. Para acioná-la:
 
 ```bash
 curl -X POST \
@@ -105,117 +75,11 @@ curl -X POST \
   -d '{}'
 ```
 
-Na primeira ingestão do conteúdo, a resposta é `created`. Nas repetições, a
-resposta é `already_exists`, mantendo o mesmo SHA-256 e URI.
+`created` indica novo conteúdo; `already_exists` indica que os mesmos bytes já
+estavam preservados. Se o hash mudar, atualize conscientemente `_SOURCE_OBJECT`
+em `cloudbuild-sqlite-to-raw.yaml` antes do deploy do job.
 
-### Objeto validado
-
-```text
-gs://lemon-ae-case-ingestion-landing/generator-report/sqlite/sha256=e42e7355e0783525cfb40364f698e8bef86f4b26925178a9316570fb4982dc1b/Lemon_Case_Tecnico_AE.db
-```
-
-Tamanho observado: `5169152` bytes.
-
-## Raw Loader
-
-### Dataset e identidade
-
-O dataset `raw` deve estar em `southamerica-east1`.
-
-Identidade de runtime:
-
-```text
-sa-lemon-raw-loader@lemon-ae-case.iam.gserviceaccount.com
-```
-
-Acessos necessários:
-
-- `roles/storage.objectViewer` somente no bucket de landing;
-- `roles/bigquery.jobUser` no projeto;
-- `roles/bigquery.dataEditor` somente no dataset `raw`.
-
-### Permitir que o deployer use a identidade do job
-
-```bash
-gcloud iam service-accounts add-iam-policy-binding \
-  "sa-lemon-raw-loader@lemon-ae-case.iam.gserviceaccount.com" \
-  --member="serviceAccount:sa-lemon-cloud-build-deployer@lemon-ae-case.iam.gserviceaccount.com" \
-  --role="roles/iam.serviceAccountUser" \
-  --project="lemon-ae-case" \
-  --condition=None
-```
-
-Verificação:
-
-```bash
-gcloud iam service-accounts get-iam-policy \
-  "sa-lemon-raw-loader@lemon-ae-case.iam.gserviceaccount.com" \
-  --project="lemon-ae-case" \
-  --format="yaml(bindings)"
-```
-
-### Artifact Registry
-
-Criação do repositório dedicado:
-
-```bash
-gcloud artifacts repositories create "lemon-data-pipelines" \
-  --repository-format="docker" \
-  --location="southamerica-east1" \
-  --description="Armazena as imagens Docker dos pipelines de dados do case Lemon." \
-  --project="lemon-ae-case"
-```
-
-Permissão de escrita para o pipeline:
-
-```bash
-gcloud artifacts repositories add-iam-policy-binding \
-  "lemon-data-pipelines" \
-  --location="southamerica-east1" \
-  --project="lemon-ae-case" \
-  --member="serviceAccount:sa-lemon-cloud-build-deployer@lemon-ae-case.iam.gserviceaccount.com" \
-  --role="roles/artifactregistry.writer" \
-  --condition=None
-```
-
-### Pipeline do job
-
-Arquivo de configuração:
-
-```text
-cloudbuild-sqlite-to-raw.yaml
-```
-
-O gatilho deve usar:
-
-| Campo | Valor |
-|---|---|
-| Nome | `deploy-lemon-sqlite-to-raw` |
-| Região | `southamerica-east1` |
-| Evento | Push para branch |
-| Branch | `^main$` |
-| Configuração | Arquivo YAML do repositório |
-| Caminho | `cloudbuild-sqlite-to-raw.yaml` |
-| Conta de serviço | `sa-lemon-cloud-build-deployer@lemon-ae-case.iam.gserviceaccount.com` |
-
-Filtros recomendados:
-
-```text
-Incluídos: jobs/sqlite_to_raw/**,cloudbuild-sqlite-to-raw.yaml
-Ignorados: nenhum
-```
-
-O pipeline usa a imagem:
-
-```text
-southamerica-east1-docker.pkg.dev/lemon-ae-case/lemon-data-pipelines/sqlite-to-raw:<SHORT_SHA>
-```
-
-Ele cria ou atualiza o job, mas não usa `--execute-now`.
-
-### Executar o job manualmente
-
-Somente depois que o pipeline de implantação estiver verde:
+### 2. Carregar a Raw
 
 ```bash
 gcloud run jobs execute "lemon-sqlite-to-raw" \
@@ -224,134 +88,213 @@ gcloud run jobs execute "lemon-sqlite-to-raw" \
   --wait
 ```
 
-### Verificar as tabelas
+O resultado esperado é a carga integral das oito tabelas e a igualdade entre
+as contagens exportadas do SQLite e carregadas no BigQuery.
 
-No BigQuery:
+### 3. Carregar a Trusted
+
+Execute os `CALL` na ordem abaixo. As oito primeiras entidades dependem apenas
+da Raw e podem ser paralelizadas no futuro; a ordem sequencial facilita a
+auditoria manual.
 
 ```sql
-SELECT
-  table_name,
-  total_rows
-FROM `lemon-ae-case`.`region-southamerica-east1`.INFORMATION_SCHEMA.TABLE_STORAGE
-WHERE table_schema = 'raw'
-ORDER BY table_name;
+CALL `lemon-ae-case.trusted.sp_carregar_boleto`();
+CALL `lemon-ae-case.trusted.sp_carregar_pix`();
+CALL `lemon-ae-case.trusted.sp_carregar_relacao_financeira`();
+CALL `lemon-ae-case.trusted.sp_carregar_cobranca`();
+CALL `lemon-ae-case.trusted.sp_carregar_faturamento`();
+CALL `lemon-ae-case.trusted.sp_carregar_cliente_energia_mensal`();
+CALL `lemon-ae-case.trusted.sp_carregar_usina_energia_mensal`();
+CALL `lemon-ae-case.trusted.sp_carregar_faixa_take_rate_gerador`();
+
+CALL `lemon-ae-case.trusted.sp_carregar_instrumento_pagamento`();
+CALL `lemon-ae-case.trusted.sp_carregar_faturamento_cliente_mensal`();
+CALL `lemon-ae-case.trusted.sp_carregar_desempenho_usina_mensal`();
 ```
 
-Resultado esperado: oito tabelas.
+```text
+boleto + pix + relacao_financeira
+  → instrumento_pagamento
 
-Confirme o metadado técnico:
+cliente_energia_mensal + cobranca + faturamento + instrumento_pagamento
+  → faturamento_cliente_mensal
+
+usina_energia_mensal + cliente_energia_mensal + faturamento_cliente_mensal
+  → desempenho_usina_mensal
+```
+
+### 4. Carregar a Refined
+
+Depois de `desempenho_usina_mensal` e `faixa_take_rate_gerador`:
 
 ```sql
-SELECT
-  table_name,
-  column_name,
-  data_type
+CALL `lemon-ae-case.refined.sp_carregar_relatorio_gerador_mensal`();
+```
+
+A procedure usa `INNER JOIN` com vigência e faixa de desempenho. Linhas sem
+faixa aplicável não chegam ao relatório; faixas sobrepostas podem duplicar
+linhas. Valide esse contrato após a carga.
+
+## Verificações pós-carga
+
+### Inventário
+
+```sql
+SELECT table_schema, table_name, table_type
+FROM `lemon-ae-case`.`region-southamerica-east1`.INFORMATION_SCHEMA.TABLES
+WHERE table_schema IN ('raw', 'trusted', 'refined')
+ORDER BY table_schema, table_name;
+```
+
+```sql
+SELECT routine_schema, routine_name, routine_type
+FROM `lemon-ae-case`.`region-southamerica-east1`.INFORMATION_SCHEMA.ROUTINES
+WHERE routine_schema IN ('trusted', 'refined')
+ORDER BY routine_schema, routine_name;
+```
+
+### Metadado e volumes
+
+```sql
+SELECT table_name, column_name, data_type
 FROM `lemon-ae-case`.raw.INFORMATION_SCHEMA.COLUMNS
 WHERE column_name = '_ingested_at'
 ORDER BY table_name;
 ```
 
-Resultado esperado: uma coluna `TIMESTAMP` em cada tabela.
+```sql
+SELECT 'cliente_energia_mensal' AS tabela, COUNT(*) AS linhas
+FROM `lemon-ae-case.trusted.cliente_energia_mensal`
+UNION ALL
+SELECT 'desempenho_usina_mensal', COUNT(*)
+FROM `lemon-ae-case.trusted.desempenho_usina_mensal`
+UNION ALL
+SELECT 'relatorio_gerador_mensal', COUNT(*)
+FROM `lemon-ae-case.refined.relatorio_gerador_mensal`;
+```
+
+### Unicidade
+
+```sql
+SELECT id_instalacao, dt_mes_referencia, COUNT(*) AS quantidade
+FROM `lemon-ae-case.trusted.cliente_energia_mensal`
+GROUP BY 1, 2
+HAVING COUNT(*) > 1;
+
+SELECT gerador, usina, cod_distribuidora, dt_mes_referencia, COUNT(*) AS quantidade
+FROM `lemon-ae-case.refined.relatorio_gerador_mensal`
+GROUP BY 1, 2, 3, 4
+HAVING COUNT(*) > 1;
+```
+
+Resultado esperado: zero linhas nas duas consultas.
+
+### Cobertura de take rate
+
+```sql
+SELECT
+  d.gerador, d.usina, d.cod_distribuidora, d.dt_mes_referencia,
+  COUNT(f.id_take_rate) AS faixas_aplicaveis
+FROM `lemon-ae-case.trusted.desempenho_usina_mensal` AS d
+LEFT JOIN `lemon-ae-case.trusted.faixa_take_rate_gerador` AS f
+  ON f.gerador = d.gerador
+ AND f.cod_distribuidora = d.cod_distribuidora
+ AND d.dt_mes_referencia BETWEEN f.dt_inicio_vigencia AND f.dt_fim_vigencia
+ AND COALESCE(d.perc_desempenho_lemon, 0) >= f.perc_desempenho_min
+ AND COALESCE(d.perc_desempenho_lemon, 0) < f.perc_desempenho_max
+GROUP BY 1, 2, 3, 4
+HAVING faixas_aplicaveis != 1;
+```
+
+Resultado esperado: zero linhas.
+
+## Testes locais
+
+No PowerShell, a partir da raiz:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+
+python -m pip install -r functions/source_ingestion/requirements.txt
+python -m unittest discover -s functions/source_ingestion/tests -v
+
+python -m pip install -r jobs/sqlite_to_raw/requirements.txt
+python -m unittest discover -s jobs/sqlite_to_raw/tests -v
+```
 
 ## Auditoria do Cloud Build
 
-Verifique qual identidade e arquivo estão configurados no gatilho da ingestão:
-
 ```bash
-gcloud builds triggers describe "deploy-lemon-source-ingestion" \
+gcloud builds triggers list \
+  --region="southamerica-east1" \
+  --project="lemon-ae-case"
+
+gcloud builds triggers describe "<TRIGGER_NAME>" \
   --region="southamerica-east1" \
   --project="lemon-ae-case" \
-  --format="yaml(name,serviceAccount,filename)"
-```
+  --format="yaml(name,serviceAccount,filename,includedFiles,ignoredFiles)"
 
-Liste as contas de serviço e seus identificadores:
-
-```bash
-gcloud iam service-accounts list \
+gcloud builds list \
+  --region="southamerica-east1" \
   --project="lemon-ae-case" \
-  --format="table(displayName,email,uniqueId,disabled)"
+  --limit=20
 ```
 
-## Problemas encontrados e correções
+## Troubleshooting
+
+### Build verde, mas dados antigos
+
+O pipeline implantou o artefato, mas não executou a carga. Execute o Cloud Run
+Job e os `CALL` na ordem deste runbook.
+
+### Tabela não mudou após alteração no DDL
+
+`CREATE TABLE IF NOT EXISTS` não altera tabelas existentes. Versione uma
+migração compatível, como `ALTER TABLE` ou criação e promoção de nova tabela.
+
+### Procedure falha por tabela ausente
+
+Verifique a publicação do DDL, o dataset e a ordem das dependências.
+
+### Refined possui menos linhas que a Trusted de desempenho
+
+Execute a validação de cobertura de take rate. Provavelmente existe uma linha
+sem faixa válida para gerador, distribuidora, competência e desempenho.
 
 ### `ImportError: libsqlite3.so.0`
 
-**Sintoma:** a função encerrava antes de abrir a porta 8080 e o startup probe
-falhava.
+A função usa `google-24-full/python314`; o Dockerfile do job instala
+`libsqlite3-0`. Preserve essas configurações.
 
-**Causa:** a stack mínima do runtime Python 3.14 não incluía a biblioteca
-dinâmica necessária ao módulo `_sqlite3`.
+### Deploy por source tenta usar a conta padrão
 
-**Correção:** usar `google-24-full/python314` na função. No job, o
-`Dockerfile` instala explicitamente `libsqlite3-0`.
+O deploy deve informar `--build-service-account`, e a identidade precisa da
+permissão `roles/iam.serviceAccountUser` aplicável.
 
-### Deploy por source usava a Default Compute Service Account
+### Cloud Shell sem conta ativa ou IAM solicita condição
 
-**Sintoma:** `caller does not have permission to act as service account`, com o
-identificador da Default Compute Service Account.
+Configure novamente conta/projeto. Para um binding incondicional, informe
+`--condition=None`.
 
-**Causa:** `gcloud run deploy --source` inicia um segundo build interno. A
-identidade do gatilho estava correta, mas a identidade desse build não havia
-sido informada explicitamente.
+### Retry cria outro build ID
 
-**Correção:** adicionar `--build-service-account` ao deploy da função e conceder
-à identidade escolhida os papéis de build e a permissão
-`roles/iam.serviceAccountUser` necessária.
-
-### Repositório `cloud-run-source-deploy` apareceu sem criação manual
-
-**Explicação:** o deploy por código-fonte do Cloud Run cria automaticamente
-esse repositório regional para guardar as imagens produzidas por
-Cloud Build/Buildpacks.
-
-**Decisão:** manter esse repositório para a função e criar
-`lemon-data-pipelines` para os containers explícitos dos jobs.
-
-### Cloud Shell sem conta ativa
-
-**Sintoma:** `You do not currently have an active account selected`.
-
-**Correção:** conferir `gcloud auth list` e definir novamente `core/account` e
-`core/project` com os comandos da seção de preparação.
-
-### IAM solicitou uma condição
-
-**Sintoma:** ao adicionar um binding, o CLI informou que a policy já continha
-bindings condicionais e solicitou uma escolha.
-
-**Correção:** declarar `--condition=None` quando o novo acesso deve ser
-incondicional. Isso evita seleção interativa ambígua.
-
-### `unittest` não encontrou o diretório inicial
-
-**Sintoma:** `Start directory is not importable`.
-
-**Causa observada:** divergência entre o nome real da pasta e o caminho passado
-ao comando.
-
-**Correção:** padronizar a pasta como `tests` e executar o discovery a partir da
-raiz do repositório.
-
-### Um retry gerou outro identificador de build
-
-Esse comportamento é esperado. `Tentar novamente` cria uma nova execução com
-outro build ID, normalmente para o mesmo commit. A execução anterior permanece
-vermelha para preservar o histórico. Um push monitorado também inicia uma nova
-execução automaticamente.
-
-### Aviso LF/CRLF no GitHub Desktop
-
-O Windows pode converter finais de linha no checkout. O arquivo
-`.gitattributes` fixa LF para Python, YAML, Dockerfile, shell e Markdown,
-mantendo os arquivos consistentes com os containers Linux.
+É esperado: cada retry é uma nova execução e o build anterior permanece no
+histórico.
 
 ## Segurança operacional
 
-- nunca registrar ou commitar a URL assinada;
-- não criar chaves JSON para as contas de serviço;
-- conceder papéis de dados no bucket/dataset, não no projeto inteiro, quando o
-  produto permitir;
-- manter o endpoint autenticado;
-- revisar IAM após cada novo componente;
-- usar tags de imagem vinculadas ao commit;
-- não executar o Raw Loader automaticamente até validar o primeiro deploy.
+- nunca registrar ou commitar a URL do endpoint;
+- não criar chaves JSON de contas de serviço;
+- manter o endpoint autenticado e os acessos no menor escopo;
+- usar tags de imagem ligadas ao commit;
+- conferir o objeto de origem antes de truncar e recarregar a Raw;
+- validar cada camada antes de executar a próxima.
+
+## Evolução para Airflow
+
+O DAG futuro deverá representar cada fronteira como uma task observável:
+ingestão, Raw Loader, procedures base Trusted, integrações Trusted, Refined e
+validações. Ele deverá respeitar as dependências acima, paralelizar somente
+entidades independentes e oferecer retries, alertas e histórico de execução.
