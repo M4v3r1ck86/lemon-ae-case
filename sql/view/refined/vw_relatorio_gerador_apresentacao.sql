@@ -9,8 +9,8 @@
 --   Uma linha por gerador + usina + distribuidora + mês de referência.
 --
 -- Observação:
---   Os percentuais são convertidos em texto somente para apresentação.
---   A tabela refined.relatorio_gerador_mensal preserva os valores numéricos.
+--   Os percentuais permanecem numéricos e são apresentados na escala de 0 a
+--   100, permitindo ordenação, filtros, agregações e cálculos corretos.
 -- =============================================================================
 
 CREATE OR REPLACE VIEW
@@ -27,9 +27,9 @@ CREATE OR REPLACE VIEW
   dt_mes_referencia
     OPTIONS(description = 'Mês de competência do relatório do gerador.'),
   perc_desempenho_lemon
-    OPTIONS(description = 'Desempenho da Lemon formatado como percentual com quatro casas decimais.'),
+    OPTIONS(description = 'Desempenho da Lemon em escala percentual de 0 a 100, arredondado para quatro casas decimais.'),
   perc_take_rate_aplicado
-    OPTIONS(description = 'Take rate aplicado formatado como percentual com duas casas decimais.'),
+    OPTIONS(description = 'Take rate aplicado em escala percentual de 0 a 100, arredondado para duas casas decimais.'),
   vlr_cobranca_gerador_brl
     OPTIONS(description = 'Valor de cobrança atribuído ao gerador, em reais.'),
   vlr_receita_bruta_gerador_brl
@@ -44,7 +44,7 @@ CREATE OR REPLACE VIEW
     OPTIONS(description = 'Soma do repasse principal e das multas pertencentes à Lemon, em reais.')
 )
 OPTIONS (
-  description = 'Visão de apresentação do relatório mensal do gerador, com percentuais formatados e repasses consolidados.'
+  description = 'Visão de apresentação do relatório mensal do gerador, com percentuais numéricos e repasses consolidados.'
 )
 AS
 SELECT
@@ -53,16 +53,8 @@ SELECT
   id_usina,
   usina,
   dt_mes_referencia,
-  REPLACE(
-    FORMAT('%.4f%%', perc_desempenho_lemon * 100),
-    '.',
-    ','
-  ) AS perc_desempenho_lemon,
-  REPLACE(
-    FORMAT('%.2f%%', perc_take_rate_aplicado * 100),
-    '.',
-    ','
-  ) AS perc_take_rate_aplicado,
+  ROUND(perc_desempenho_lemon * 100, 4) AS perc_desempenho_lemon,
+  ROUND(perc_take_rate_aplicado * 100, 2) AS perc_take_rate_aplicado,
   vlr_cobranca_gerador_brl,
   vlr_receita_bruta_gerador_brl,
   vlr_receita_multas_brl,
