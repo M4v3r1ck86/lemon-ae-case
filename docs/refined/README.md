@@ -15,11 +15,13 @@ Fluxo:
 ```mermaid
 flowchart LR
     PERFORMANCE[trusted.<br/>desempenho_usina_mensal]
+    SETTLEMENT[trusted.<br/>liquidacao_usina_mensal]
     RATE[trusted.<br/>faixa_take_rate_gerador]
     REPORT[refined.<br/>relatorio_gerador_mensal]
     VIEW[refined.<br/>vw_relatorio_gerador_apresentacao]
 
     PERFORMANCE --> REPORT
+    SETTLEMENT -. auditoria de competência e caixa .-> REPORT
     RATE --> REPORT
     REPORT --> VIEW
 ```
