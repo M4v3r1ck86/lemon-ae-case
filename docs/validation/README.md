@@ -4,8 +4,9 @@ Esta pasta documenta a engenharia reversa da view recebida no SQLite. Ela não
 substitui a ingestão: a Cloud Run Function e o Cloud Run Job continuam sendo o
 caminho oficial entre o endpoint do case, a landing e a camada Raw.
 
-Os quatro SQLs em `sql/validation` formam uma sequência de entendimento e
-comparação. Eles são artefatos de análise, não quatro produtos finais.
+Os quatro primeiros SQLs em `sql/validation` formam uma sequência de
+entendimento e comparação. Os scripts `05` e `06` verificam o contrato temporal
+D+60 e o fechamento publicado.
 
 ## Fluxo
 
@@ -23,6 +24,8 @@ flowchart LR
 | 2 | [`02_generator_report_legacy_step_by_step.sql`](../../sql/validation/02_generator_report_legacy_step_by_step.sql) | Traduz o legado para GoogleSQL e troca CTEs por temporárias inspecionáveis |
 | 3 | [`03_generator_report_refactored_candidate.sql`](../../sql/validation/03_generator_report_refactored_candidate.sql) | Materializa uma view candidata com correções técnicas |
 | 4 | [`04_generator_report_corrected_step_by_step.sql`](../../sql/validation/04_generator_report_corrected_step_by_step.sql) | Decompõe a lógica corrigida para diagnóstico e reconciliação |
+| 5 | [`05_validate_temporalidade_d60.sql`](../../sql/validation/05_validate_temporalidade_d60.sql) | Valida flags, valores e agregações por competência e liquidação |
+| 6 | [`06_validate_fechamento_refined.sql`](../../sql/validation/06_validate_fechamento_refined.sql) | Valida grain, maturação, fórmulas, TUSD e zeros de take rate |
 
 ## 01 — Original SQLite
 
