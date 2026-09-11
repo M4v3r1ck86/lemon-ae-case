@@ -14,7 +14,7 @@ URL da fonte e credenciais não devem aparecer em comandos, logs ou commits.
 | Artifact Registry | `lemon-data-pipelines` |
 | Datasets | `raw`, `trusted`, `refined`, `validation` |
 | Raw | 8 tabelas |
-| Trusted | 11 tabelas e 11 procedures |
+| Trusted | 12 tabelas e 12 procedures |
 | Refined | 1 tabela, 1 procedure e 1 view versionada |
 | Validation | Scripts de paridade, candidatos e diagnóstico executados sob demanda |
 
@@ -110,6 +110,7 @@ CALL `lemon-ae-case.trusted.sp_carregar_faixa_take_rate_gerador`();
 
 CALL `lemon-ae-case.trusted.sp_carregar_instrumento_pagamento`();
 CALL `lemon-ae-case.trusted.sp_carregar_faturamento_cliente_mensal`();
+CALL `lemon-ae-case.trusted.sp_carregar_liquidacao_usina_mensal`();
 CALL `lemon-ae-case.trusted.sp_carregar_desempenho_usina_mensal`();
 ```
 
@@ -119,6 +120,9 @@ boleto + pix + relacao_financeira
 
 cliente_energia_mensal + cobranca + faturamento + instrumento_pagamento
   → faturamento_cliente_mensal
+
+faturamento_cliente_mensal
+  → liquidacao_usina_mensal
 
 usina_energia_mensal + cliente_energia_mensal + faturamento_cliente_mensal
   → desempenho_usina_mensal
@@ -132,9 +136,11 @@ Depois de `desempenho_usina_mensal` e `faixa_take_rate_gerador`:
 CALL `lemon-ae-case.refined.sp_carregar_relatorio_gerador_mensal`();
 ```
 
-A procedure usa `INNER JOIN` com vigência e faixa de desempenho. Linhas sem
-faixa aplicável não chegam ao relatório; faixas sobrepostas podem duplicar
-linhas. Valide esse contrato após a carga.
+A procedure publica somente competências que atingiram D+60. Antes de gravar,
+ela exige exatamente uma faixa de take rate por linha; ausência ou sobreposição
+interrompe a execução sem alterar o relatório. Linhas legadas sem metadados de
+fechamento são substituídas na primeira execução, e fechamentos publicados não
+são reprocessados.
 
 ## Verificações pós-carga
 
@@ -169,6 +175,9 @@ FROM `lemon-ae-case.trusted.cliente_energia_mensal`
 UNION ALL
 SELECT 'desempenho_usina_mensal', COUNT(*)
 FROM `lemon-ae-case.trusted.desempenho_usina_mensal`
+UNION ALL
+SELECT 'liquidacao_usina_mensal', COUNT(*)
+FROM `lemon-ae-case.trusted.liquidacao_usina_mensal`
 UNION ALL
 SELECT 'relatorio_gerador_mensal', COUNT(*)
 FROM `lemon-ae-case.refined.relatorio_gerador_mensal`;
@@ -208,6 +217,22 @@ HAVING faixas_aplicaveis != 1;
 ```
 
 Resultado esperado: zero linhas.
+
+### Temporalidade D+60 e fechamento
+
+Execute, na ordem, os scripts completos:
+
+```bash
+bq query --project_id="lemon-ae-case" --location="southamerica-east1" \
+  --use_legacy_sql=false < sql/validation/05_validate_temporalidade_d60.sql
+
+bq query --project_id="lemon-ae-case" --location="southamerica-east1" \
+  --use_legacy_sql=false < sql/validation/06_validate_fechamento_refined.sql
+```
+
+Nos dois scripts, as consultas identificadas como controle devem retornar zero
+linhas. As consultas de distribuição e diagnóstico devem retornar dados para
+inspeção, inclusive a explicação de take rates iguais a zero.
 
 ## Testes locais
 
