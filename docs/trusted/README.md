@@ -12,6 +12,7 @@ Documentos gerados a partir dos DDLs e procedures versionados no repositório. A
 | [`trusted.faturamento`](faturamento.md) | `raw.finance_billings` | uma linha por `id_faturamento` |
 | [`trusted.faturamento_cliente_mensal`](faturamento_cliente_mensal.md) | `trusted.cliente_energia_mensal`, `trusted.cobranca`, `trusted.faturamento`, `trusted.instrumento_pagamento` | uma linha por `id_instalacao + dt_mes_referencia` |
 | [`trusted.instrumento_pagamento`](instrumento_pagamento.md) | `trusted.boleto`, `trusted.pix`, `trusted.relacao_financeira` | uma linha por `tipo_instrumento + id_instrumento` |
+| [`trusted.liquidacao_usina_mensal`](liquidacao_usina_mensal.md) | `trusted.faturamento_cliente_mensal` | uma linha por usina, competência de origem, mês de liquidação e classificação D+60 |
 | [`trusted.pix`](pix.md) | `raw.finance_pixs` | uma linha por `id_pix` |
 | [`trusted.relacao_financeira`](relacao_financeira.md) | `raw.finance_relations` | uma aresta por `id_grafo_origem + id_grafo_destino` |
 | [`trusted.usina_energia_mensal`](usina_energia_mensal.md) | `raw.energy_farms` | uma linha por `usina + dt_mes_referencia` |
