@@ -35,23 +35,35 @@ BEGIN
     dt_mes_referencia,
     COUNTIF(flg_emitido) AS qtd_faturamentos_emitidos,
     COUNTIF(flg_pago) AS qtd_faturamentos_pagos,
+    COUNTIF(flg_pago_ate_d60) AS qtd_faturamentos_pagos_d60,
+    COUNTIF(flg_pago_apos_d60) AS qtd_faturamentos_pagos_apos_d60,
     COUNTIF(flg_multiplos_instrumentos_pagos)
       AS qtd_faturamentos_multiplos_instrumentos_pagos,
     SUM(qtd_creditos_faturados_pagos_kwh)
       AS qtd_creditos_faturados_pagos_kwh,
+    SUM(qtd_creditos_faturados_pagos_d60_kwh)
+      AS qtd_creditos_faturados_pagos_d60_kwh,
+    CASE
+      WHEN COUNTIF(flg_emitido AND dt_limite_pagamento_d60 IS NULL) > 0
+        THEN NULL
+      ELSE MAX(dt_limite_pagamento_d60)
+    END AS dt_fechamento_competencia,
     SUM(IF(flg_emitido, vlr_gmv_gerador_brl, 0))
       AS vlr_cobranca_gerador_brl,
     SUM(COALESCE(vlr_cobranca_brl, 0)) AS vlr_cobranca_brl,
     SUM(COALESCE(vlr_faturamento_brl, 0)) AS vlr_faturamento_brl,
     SUM(COALESCE(vlr_total_pago_brl, 0)) AS vlr_total_pago_brl,
     SUM(COALESCE(vlr_principal_pago_brl, 0)) AS vlr_principal_pago_brl,
-    SUM(
-      COALESCE(
-        SAFE_DIVIDE(vlr_principal_pago_brl, NULLIF(vlr_faturamento_brl, 0))
-          * vlr_gmv_gerador_brl,
-        0
-      )
-    ) AS vlr_liquidado_gerador_brl,
+    SUM(COALESCE(vlr_liquidado_gerador_brl, 0))
+      AS vlr_liquidado_gerador_brl,
+    SUM(COALESCE(vlr_liquidado_gerador_d60_brl, 0))
+      AS vlr_liquidado_gerador_d60_brl,
+    SUM(COALESCE(vlr_liquidado_gerador_apos_d60_brl, 0))
+      AS vlr_liquidado_gerador_apos_d60_brl,
+    SUM(IF(flg_pago_ate_d60, COALESCE(vlr_juros_pago_brl, 0), 0))
+      AS vlr_juros_pago_d60_brl,
+    SUM(IF(flg_pago_ate_d60, COALESCE(vlr_multa_paga_brl, 0), 0))
+      AS vlr_multa_paga_d60_brl,
     SUM(COALESCE(vlr_juros_pago_brl, 0)) AS vlr_juros_pago_brl,
     SUM(COALESCE(vlr_multa_paga_brl, 0)) AS vlr_multa_paga_brl,
     MAX(ingerido_em) AS ingerido_em
@@ -73,6 +85,10 @@ BEGIN
       AS qtd_faturamentos_emitidos,
     COALESCE(financeiro.qtd_faturamentos_pagos, 0)
       AS qtd_faturamentos_pagos,
+    COALESCE(financeiro.qtd_faturamentos_pagos_d60, 0)
+      AS qtd_faturamentos_pagos_d60,
+    COALESCE(financeiro.qtd_faturamentos_pagos_apos_d60, 0)
+      AS qtd_faturamentos_pagos_apos_d60,
     COALESCE(financeiro.qtd_faturamentos_multiplos_instrumentos_pagos, 0)
       AS qtd_faturamentos_multiplos_instrumentos_pagos,
     farm.qtd_creditos_injetados_kwh,
@@ -88,6 +104,13 @@ BEGIN
       AS qtd_creditos_faturados_kwh,
     COALESCE(financeiro.qtd_creditos_faturados_pagos_kwh, 0)
       AS qtd_creditos_faturados_pagos_kwh,
+    COALESCE(financeiro.qtd_creditos_faturados_pagos_d60_kwh, 0)
+      AS qtd_creditos_faturados_pagos_d60_kwh,
+    financeiro.dt_fechamento_competencia,
+    COALESCE(
+      CURRENT_DATE() >= financeiro.dt_fechamento_competencia,
+      FALSE
+    ) AS flg_competencia_fechada,
     COALESCE(cliente.vlr_gmv_real_oficial_brl, 0)
       AS vlr_gmv_real_oficial_brl,
     COALESCE(cliente.vlr_gmv_gerador_brl, 0) AS vlr_gmv_gerador_brl,
@@ -99,6 +122,14 @@ BEGIN
     COALESCE(financeiro.vlr_principal_pago_brl, 0) AS vlr_principal_pago_brl,
     COALESCE(financeiro.vlr_liquidado_gerador_brl, 0)
       AS vlr_liquidado_gerador_brl,
+    COALESCE(financeiro.vlr_liquidado_gerador_d60_brl, 0)
+      AS vlr_liquidado_gerador_d60_brl,
+    COALESCE(financeiro.vlr_liquidado_gerador_apos_d60_brl, 0)
+      AS vlr_liquidado_gerador_apos_d60_brl,
+    COALESCE(financeiro.vlr_juros_pago_d60_brl, 0)
+      AS vlr_juros_pago_d60_brl,
+    COALESCE(financeiro.vlr_multa_paga_d60_brl, 0)
+      AS vlr_multa_paga_d60_brl,
     COALESCE(financeiro.vlr_juros_pago_brl, 0) AS vlr_juros_pago_brl,
     COALESCE(financeiro.vlr_multa_paga_brl, 0) AS vlr_multa_paga_brl,
     farm.vlr_tusd_brl,
@@ -146,7 +177,7 @@ BEGIN
       NULLIF(qtd_minima_injecao_kwh, 0)
     ) AS perc_preenchimento_usina,
     SAFE_DIVIDE(
-      qtd_creditos_faturados_pagos_kwh,
+      qtd_creditos_faturados_pagos_d60_kwh,
       NULLIF(qtd_minima_injecao_kwh, 0)
     ) AS perc_desempenho_lemon,
     flg_possui_clientes,
@@ -166,7 +197,53 @@ BEGIN
   -- ETAPA 6 — CARGA
   BEGIN TRANSACTION;
   DELETE FROM `lemon-ae-case.trusted.desempenho_usina_mensal` WHERE TRUE;
-  INSERT INTO `lemon-ae-case.trusted.desempenho_usina_mensal`
-  SELECT * FROM tmp_desempenho_usina_deduplicado;
+  INSERT INTO `lemon-ae-case.trusted.desempenho_usina_mensal` (
+    gerador, usina, cod_distribuidora, dt_mes_referencia, qtd_instalacoes,
+    qtd_faturamentos_emitidos, qtd_faturamentos_pagos,
+    qtd_faturamentos_pagos_d60, qtd_faturamentos_pagos_apos_d60,
+    qtd_faturamentos_multiplos_instrumentos_pagos,
+    qtd_creditos_injetados_kwh, qtd_geracao_prevista_contrato_kwh,
+    qtd_geracao_realizada_gerador_kwh, qtd_minima_injecao_kwh,
+    qtd_creditos_recebidos_kwh, qtd_creditos_faturados_kwh,
+    qtd_creditos_faturados_pagos_kwh,
+    qtd_creditos_faturados_pagos_d60_kwh, dt_fechamento_competencia,
+    flg_competencia_fechada, vlr_gmv_real_oficial_brl,
+    vlr_gmv_gerador_brl, vlr_cobranca_gerador_brl, vlr_cobranca_brl,
+    vlr_faturamento_brl, vlr_total_pago_brl, vlr_principal_pago_brl,
+    vlr_liquidado_gerador_brl, vlr_liquidado_gerador_d60_brl,
+    vlr_liquidado_gerador_apos_d60_brl, vlr_juros_pago_d60_brl,
+    vlr_multa_paga_d60_brl, vlr_juros_pago_brl, vlr_multa_paga_brl,
+    vlr_tusd_brl, dt_mes_desconto_tusd_gerador,
+    vlr_tusd_descontada_gerador_brl, vlr_aluguel_imoveis_brl,
+    vlr_aluguel_equipamento_brl, vlr_operacao_manutencao_brl,
+    perc_injetado_vs_previsto, perc_distribuidora_vs_inversor,
+    perc_recebidos_vs_injetados, perc_faturados_vs_recebidos,
+    perc_preenchimento_usina, perc_desempenho_lemon,
+    flg_possui_clientes, flg_possui_faturamento, ingerido_em
+  )
+  SELECT
+    gerador, usina, cod_distribuidora, dt_mes_referencia, qtd_instalacoes,
+    qtd_faturamentos_emitidos, qtd_faturamentos_pagos,
+    qtd_faturamentos_pagos_d60, qtd_faturamentos_pagos_apos_d60,
+    qtd_faturamentos_multiplos_instrumentos_pagos,
+    qtd_creditos_injetados_kwh, qtd_geracao_prevista_contrato_kwh,
+    qtd_geracao_realizada_gerador_kwh, qtd_minima_injecao_kwh,
+    qtd_creditos_recebidos_kwh, qtd_creditos_faturados_kwh,
+    qtd_creditos_faturados_pagos_kwh,
+    qtd_creditos_faturados_pagos_d60_kwh, dt_fechamento_competencia,
+    flg_competencia_fechada, vlr_gmv_real_oficial_brl,
+    vlr_gmv_gerador_brl, vlr_cobranca_gerador_brl, vlr_cobranca_brl,
+    vlr_faturamento_brl, vlr_total_pago_brl, vlr_principal_pago_brl,
+    vlr_liquidado_gerador_brl, vlr_liquidado_gerador_d60_brl,
+    vlr_liquidado_gerador_apos_d60_brl, vlr_juros_pago_d60_brl,
+    vlr_multa_paga_d60_brl, vlr_juros_pago_brl, vlr_multa_paga_brl,
+    vlr_tusd_brl, dt_mes_desconto_tusd_gerador,
+    vlr_tusd_descontada_gerador_brl, vlr_aluguel_imoveis_brl,
+    vlr_aluguel_equipamento_brl, vlr_operacao_manutencao_brl,
+    perc_injetado_vs_previsto, perc_distribuidora_vs_inversor,
+    perc_recebidos_vs_injetados, perc_faturados_vs_recebidos,
+    perc_preenchimento_usina, perc_desempenho_lemon,
+    flg_possui_clientes, flg_possui_faturamento, ingerido_em
+  FROM tmp_desempenho_usina_deduplicado;
   COMMIT TRANSACTION;
 END;
