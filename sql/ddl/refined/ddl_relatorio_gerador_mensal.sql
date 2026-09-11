@@ -24,6 +24,12 @@ CREATE TABLE IF NOT EXISTS `lemon-ae-case.refined.relatorio_gerador_mensal`
     OPTIONS(description = 'Código ou nome padronizado da distribuidora de energia.'),
   dt_mes_referencia DATE NOT NULL
     OPTIONS(description = 'Mês de competência do relatório do gerador.'),
+  dt_fechamento_competencia DATE
+    OPTIONS(description = 'Data em que todos os faturamentos da competência alcançam D+60.'),
+  dias_maturacao INT64
+    OPTIONS(description = 'Janela de maturação aplicada ao fechamento; valor contratual deste produto é 60 dias.'),
+  status_fechamento STRING
+    OPTIONS(description = 'Estado do fechamento da competência; somente fechado é materializado.'),
   qtd_instalacoes INT64
     OPTIONS(description = 'Quantidade de instalações de clientes associadas à usina na competência.'),
   qtd_creditos_injetados_kwh NUMERIC
@@ -31,7 +37,7 @@ CREATE TABLE IF NOT EXISTS `lemon-ae-case.refined.relatorio_gerador_mensal`
   qtd_creditos_faturados_kwh NUMERIC
     OPTIONS(description = 'Quantidade de créditos faturados para os clientes da usina, em kWh.'),
   qtd_creditos_faturados_pagos_kwh NUMERIC
-    OPTIONS(description = 'Quantidade de créditos faturados vinculados a faturamentos pagos, em kWh.'),
+    OPTIONS(description = 'Quantidade de créditos faturados vinculados a pagamentos elegíveis até D+60, em kWh.'),
   qtd_minima_injecao_kwh NUMERIC
     OPTIONS(description = 'Menor valor entre os créditos injetados e a geração prevista, em kWh.'),
   perc_desempenho_lemon NUMERIC
@@ -47,7 +53,11 @@ CREATE TABLE IF NOT EXISTS `lemon-ae-case.refined.relatorio_gerador_mensal`
   vlr_cobranca_gerador_brl NUMERIC
     OPTIONS(description = 'Valor de cobrança atribuído ao gerador na competência, em reais.'),
   vlr_liquidado_gerador_brl NUMERIC
-    OPTIONS(description = 'Parcela do principal liquidado atribuída ao gerador, em reais.'),
+    OPTIONS(description = 'Parcela do principal liquidado até D+60 atribuída ao gerador, em reais.'),
+  vlr_liquidado_gerador_apos_d60_brl NUMERIC
+    OPTIONS(description = 'Liquidações da competência recebidas após D+60, evidenciadas sem reabrir o fechamento.'),
+  vlr_saldo_nao_liquidado_d60_brl NUMERIC
+    OPTIONS(description = 'Parcela do GMV do gerador não liquidada até D+60.'),
   vlr_receita_bruta_gerador_brl NUMERIC
     OPTIONS(description = 'Receita bruta do gerador antes do take rate e da TUSD, em reais.'),
   vlr_receita_multas_brl NUMERIC
