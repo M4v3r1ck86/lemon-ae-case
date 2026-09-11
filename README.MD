@@ -68,13 +68,14 @@ tabelas são materializadas no BigQuery.
 |---|---|---|
 | Landing | Preservação imutável do SQLite por SHA-256 | Implementada e validada |
 | Raw | Oito tabelas com nomes da fonte e `_ingested_at` | Implementada e carregada |
-| Trusted | Tipagem, nomenclatura, deduplicação e integração | 11 tabelas e 11 procedures |
-| Refined | Métricas, take rate, receitas e repasses | Tabela, procedure e view implementadas |
+| Trusted | Tipagem, temporalidade D+60, deduplicação e integração | 12 tabelas e 12 procedures |
+| Refined | Fechamento imutável, take rate, TUSD e repasses | Tabela, procedure e view implementadas |
 | Validation | Paridade, diagnóstico e candidatos da engenharia reversa | Artefatos SQL de apoio |
 
 ## Engenharia reversa e validação
 
-Os quatro scripts em `sql/validation` contam uma única sequência:
+Os quatro primeiros scripts em `sql/validation` contam a sequência de
+engenharia reversa:
 
 ```mermaid
 flowchart LR
@@ -90,7 +91,8 @@ flowchart LR
 
 Eles demonstram como a view foi compreendida, quais problemas técnicos foram
 encontrados e como a proposta final foi alcançada. Não representam quatro
-produtos concorrentes. Veja [Validação e entendimento](docs/validation/README.md).
+produtos concorrentes. Os scripts `05` e `06` validam a temporalidade D+60 e o
+fechamento Refined. Veja [Validação e entendimento](docs/validation/README.md).
 
 ## Princípios da solução
 
@@ -100,6 +102,8 @@ produtos concorrentes. Veja [Validação e entendimento](docs/validation/README.
 - nomes e tipos semânticos tratados na Trusted;
 - valores financeiros convertidos de centavos para reais;
 - instrumentos agregados antes dos joins para evitar fanout;
+- competência e mês de liquidação preservados separadamente;
+- fechamento após 60 dias corridos do vencimento;
 - faixa de take rate aplicada somente na Refined;
 - SQL, DDLs e procedures versionados no GitHub;
 - implantação automatizada pelo Cloud Build;
