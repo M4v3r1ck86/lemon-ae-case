@@ -16,6 +16,10 @@ O produto atende análises operacionais e financeiras, permitindo:
 - calcular receita bruta, TUSD e repasses;
 - alimentar relatórios e visualizações sem reconstruir os joins financeiros.
 
+O fechamento usa maturação de 60 dias corridos após o vencimento vigente de
+cada fatura. A competência de origem e o mês da liquidação permanecem
+separados; recebimentos posteriores ao D+60 não reabrem o fechamento.
+
 ## Contrato publicado
 
 | Contrato | Finalidade |
@@ -76,12 +80,17 @@ exclusivo.
 receita bruta do gerador × (1 − take rate) − TUSD
 ```
 
+A receita bruta do fechamento considera somente a parcela liquidada até D+60.
+A TUSD é associada pelo mês explicitamente informado para desconto.
+
 Multas e juros são divididos separadamente pelo mesmo take rate e consolidados
 somente na view de apresentação.
 
 ## Qualidade e limitações
 
-- a carga atual é full refresh;
+- as tabelas Trusted são reconstruídas por full refresh;
+- a Refined insere cada fechamento
+  maduro uma única vez;
 - as procedures são executadas manualmente na operação atual;
 - ausência ou sobreposição de faixa de take rate invalida o contrato esperado;
 - o modelo usa o snapshot recebido no case e não define SLA de produção;
