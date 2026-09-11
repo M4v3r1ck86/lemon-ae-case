@@ -67,8 +67,9 @@ uma faixa aplicável por linha de desempenho.
 ## View de apresentação
 
 `refined.vw_relatorio_gerador_apresentacao` reduz o contrato para os campos de
-fechamento e apresentação,
-transforma os percentuais para a escala de 0 a 100 e publica:
+fechamento e apresentação, transforma os percentuais para a escala de 0 a 100
+e expõe `dt_mes_desconto_tusd_gerador` para diferenciar ausência de TUSD de um
+desconto cujo valor seja zero. A view também publica:
 
 ```text
 vlr_repasse_total_gerador_brl

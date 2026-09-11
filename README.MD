@@ -94,6 +94,11 @@ encontrados e como a proposta final foi alcançada. Não representam quatro
 produtos concorrentes. Os scripts `05` e `06` validam a temporalidade D+60 e o
 fechamento Refined. Veja [Validação e entendimento](docs/validation/README.md).
 
+O resultado original possui 10 linhas porque a TUSD determina quais usinas
+chegam à saída. O produto Refined preserva as 23 usinas operacionais e mantém a
+ausência de TUSD explícita, sem descartar a linha. A análise e os CSVs utilizados
+como evidência estão em [Comparação dos resultados](docs/validation/generator_report_result_comparison.md).
+
 ## Princípios da solução
 
 - fonte preservada de forma idempotente e endereçada por SHA-256;

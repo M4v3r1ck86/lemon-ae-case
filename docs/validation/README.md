@@ -71,6 +71,7 @@ raw
 
 - [Descoberta e linhagem das colunas](generator_report_column_discovery.md)
 - [Achados críticos](generator_report_critical_findings.md)
+- [Comparação dos resultados: 10 linhas no legado e 23 na Refined](generator_report_result_comparison.md)
 
 ## Diagramas
 

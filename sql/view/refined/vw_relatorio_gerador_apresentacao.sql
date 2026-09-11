@@ -44,6 +44,8 @@ CREATE OR REPLACE VIEW
     OPTIONS(description = 'Saldo do gerador que não foi liquidado até D+60.'),
   vlr_receita_multas_brl
     OPTIONS(description = 'Receita recebida de multas e juros, em reais.'),
+  dt_mes_desconto_tusd_gerador
+    OPTIONS(description = 'Mês em que a TUSD é aplicada ao repasse do gerador; nulo quando não há desconto associado.'),
   vlr_tusd_descontada_gerador_brl
     OPTIONS(description = 'Valor de TUSD descontado do repasse do gerador, em reais.'),
   vlr_repasse_total_gerador_brl
@@ -70,6 +72,7 @@ SELECT
   vlr_liquidado_gerador_apos_d60_brl,
   vlr_saldo_nao_liquidado_d60_brl,
   vlr_receita_multas_brl,
+  dt_mes_desconto_tusd_gerador,
   vlr_tusd_descontada_gerador_brl,
   vlr_repasse_gerador_brl
     + vlr_repasse_multas_gerador_brl AS vlr_repasse_total_gerador_brl,
