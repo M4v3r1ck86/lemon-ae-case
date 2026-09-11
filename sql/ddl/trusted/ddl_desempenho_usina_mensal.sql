@@ -34,6 +34,10 @@ CREATE TABLE IF NOT EXISTS `lemon-ae-case.trusted.desempenho_usina_mensal`
     OPTIONS(description = 'Quantidade de faturamentos emitidos para instalações da usina na competência.'),
   qtd_faturamentos_pagos INT64
     OPTIONS(description = 'Quantidade de faturamentos pagos para instalações da usina na competência.'),
+  qtd_faturamentos_pagos_d60 INT64
+    OPTIONS(description = 'Quantidade de faturamentos pagos até D+60 na competência.'),
+  qtd_faturamentos_pagos_apos_d60 INT64
+    OPTIONS(description = 'Quantidade de faturamentos pagos após D+60 na competência.'),
   qtd_faturamentos_multiplos_instrumentos_pagos INT64
     OPTIONS(description = 'Quantidade de faturamentos da usina com mais de um instrumento marcado como pago.'),
   qtd_creditos_injetados_kwh NUMERIC
@@ -50,6 +54,12 @@ CREATE TABLE IF NOT EXISTS `lemon-ae-case.trusted.desempenho_usina_mensal`
     OPTIONS(description = 'Quantidade de créditos faturados pelas instalações vinculadas à usina na competência, em kWh.'),
   qtd_creditos_faturados_pagos_kwh NUMERIC
     OPTIONS(description = 'Quantidade de créditos faturados associada a faturamentos pagos das instalações da usina, em kWh.'),
+  qtd_creditos_faturados_pagos_d60_kwh NUMERIC
+    OPTIONS(description = 'Créditos faturados associados a pagamentos elegíveis até D+60.'),
+  dt_fechamento_competencia DATE
+    OPTIONS(description = 'Maior data D+60 entre os faturamentos da usina e competência.'),
+  flg_competencia_fechada BOOL
+    OPTIONS(description = 'Indica que a data de processamento já alcançou o fechamento D+60.'),
   vlr_gmv_real_oficial_brl NUMERIC
     OPTIONS(description = 'Soma do GMV real oficial das instalações vinculadas à usina na competência, em reais.'),
   vlr_gmv_gerador_brl NUMERIC
@@ -66,6 +76,14 @@ CREATE TABLE IF NOT EXISTS `lemon-ae-case.trusted.desempenho_usina_mensal`
     OPTIONS(description = 'Soma dos valores pagos excluindo multa e juros, em reais.'),
   vlr_liquidado_gerador_brl NUMERIC
     OPTIONS(description = 'Parcela do principal pago atribuída ao gerador proporcionalmente ao GMV do gerador, em reais.'),
+  vlr_liquidado_gerador_d60_brl NUMERIC
+    OPTIONS(description = 'Parcela liquidada do gerador reconhecida até D+60, em reais.'),
+  vlr_liquidado_gerador_apos_d60_brl NUMERIC
+    OPTIONS(description = 'Parcela liquidada do gerador recebida depois de D+60, em reais.'),
+  vlr_juros_pago_d60_brl NUMERIC
+    OPTIONS(description = 'Juros pagos em faturamentos elegíveis até D+60, em reais.'),
+  vlr_multa_paga_d60_brl NUMERIC
+    OPTIONS(description = 'Multas pagas em faturamentos elegíveis até D+60, em reais.'),
   vlr_juros_pago_brl NUMERIC
     OPTIONS(description = 'Soma dos valores de juros pagos, em reais.'),
   vlr_multa_paga_brl NUMERIC
