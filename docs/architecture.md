@@ -28,7 +28,7 @@ flowchart TB
 
     subgraph BQ[BigQuery]
         RAW[raw<br/>8 tabelas]
-        TRUSTED[trusted<br/>11 tabelas e 11 procedures]
+        TRUSTED[trusted<br/>12 tabelas e 12 procedures]
         REFINED[refined<br/>relatorio_gerador_mensal]
         VIEW[View de apresentação]
         VALIDATION[validation<br/>comparação e diagnóstico]
@@ -106,19 +106,24 @@ deduplica registros e cria entidades integradas.
 |---|---|
 | Energia | `cliente_energia_mensal`, `usina_energia_mensal`, `faixa_take_rate_gerador` |
 | Financeiro | `boleto`, `pix`, `cobranca`, `faturamento`, `relacao_financeira` |
-| Integração | `instrumento_pagamento`, `faturamento_cliente_mensal`, `desempenho_usina_mensal` |
+| Integração | `instrumento_pagamento`, `faturamento_cliente_mensal`, `liquidacao_usina_mensal`, `desempenho_usina_mensal` |
 
-As 11 cargas usam full refresh transacional por tabela. As entidades integradas
+As 12 cargas usam full refresh transacional por tabela. As entidades integradas
 agregam e relacionam dados antes da deduplicação defensiva. O catálogo completo
 está em [`docs/trusted/README.md`](trusted/README.md).
+
+O faturamento preserva a competência de origem e o mês da liquidação. Pagamentos
+até 60 dias corridos após o vencimento vigente compõem o fechamento da
+competência; pagamentos posteriores permanecem disponíveis como recuperação de
+competências anteriores em `trusted.liquidacao_usina_mensal`.
 
 ### 5. Produto de dados na Refined
 
 O dataset `refined` está criado. A tabela
 `refined.relatorio_gerador_mensal` possui uma linha por gerador, usina,
-distribuidora e mês. Sua procedure associa a faixa de take rate válida, calcula
-receitas e repasses, aplica o desconto de TUSD e substitui o conteúdo em uma
-transação.
+distribuidora e mês. Sua procedure publica somente competências maduras, exige
+uma única faixa de take rate, calcula receitas e repasses e aplica a TUSD no mês
+de desconto informado pela fonte. Fechamentos publicados não são atualizados.
 
 A view versionada `refined.vw_relatorio_gerador_apresentacao` fornece uma saída
 enxuta, com percentuais na escala de 0 a 100 e repasses consolidados.
@@ -138,7 +143,7 @@ com tabelas temporárias devem ser executados como uma única sessão no BigQuer
 ```text
 Projeto: lemon-ae-case
 ├── raw: 8 tabelas
-├── trusted: 11 tabelas + 11 stored procedures
+├── trusted: 12 tabelas + 12 stored procedures
 ├── refined
     ├── relatorio_gerador_mensal
     ├── sp_carregar_relatorio_gerador_mensal
@@ -181,8 +186,8 @@ pelo Google Cloud, com acessos no menor escopo possível.
 - A landing preserva bytes; a Raw começa na materialização tabular.
 - A Raw evita interpretação semântica; conversões pertencem à Trusted.
 - DDL, publicação de procedure e execução da procedure são etapas distintas.
-- As cargas são full refresh e transacionais por tabela, não uma transação
-  única entre todas as camadas.
+- As tabelas Trusted usam full refresh transacional por entidade. A Refined
+  insere competências maduras uma única vez para preservar o fechamento.
 - Os oito loads Raw são independentes; não há promoção atômica global.
 - Não há DAG, agendamento, retry coordenado ou SLA ponta a ponta.
 - A view está em `sql/view/refined`, mas não participa dos quatro pipelines SQL
