@@ -110,7 +110,10 @@ BEGIN
     AND COALESCE(desempenho.perc_desempenho_lemon, 0)
       < faixa.perc_desempenho_max
   LEFT JOIN tmp_tusd_por_mes_desconto AS tusd
-    USING (gerador, usina, cod_distribuidora, dt_mes_referencia);
+    ON tusd.gerador = desempenho.gerador
+    AND tusd.usina = desempenho.usina
+    AND tusd.cod_distribuidora = desempenho.cod_distribuidora
+    AND tusd.dt_mes_referencia = desempenho.dt_mes_referencia;
 
   CREATE TEMP TABLE tmp_relatorio_gerador AS
   SELECT
