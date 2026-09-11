@@ -196,3 +196,8 @@ python -m unittest discover -s jobs/sqlite_to_raw/tests -v
 - [Catálogo Trusted](docs/trusted/README.md)
 - [Contrato Refined](docs/refined/README.md)
 - [Validação e entendimento](docs/validation/README.md)
+
+## Dash simples em html e js
+
+![alt text](Screenshot_24.png) 
+![alt text](Screenshot_25.png)
