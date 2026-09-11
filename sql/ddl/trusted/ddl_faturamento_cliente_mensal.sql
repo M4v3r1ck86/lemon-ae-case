@@ -50,6 +50,14 @@ CREATE TABLE IF NOT EXISTS `lemon-ae-case.trusted.faturamento_cliente_mensal`
     OPTIONS(description = 'Data em que o pagamento foi registrado no faturamento.'),
   dt_mes_pagamento DATE
     OPTIONS(description = 'Primeiro dia do mês em que o pagamento foi registrado, utilizado para análises por competência de liquidação.'),
+  dt_vencimento_base_d60 DATE
+    OPTIONS(description = 'Vencimento vigente, ou original quando o vigente estiver ausente, usado como base da maturação D+60.'),
+  dt_limite_pagamento_d60 DATE
+    OPTIONS(description = 'Data limite de reconhecimento na competência, calculada como vencimento-base mais 60 dias corridos.'),
+  qtd_dias_para_pagamento INT64
+    OPTIONS(description = 'Dias entre o vencimento-base e o pagamento; negativo ou zero representa pagamento em dia.'),
+  faixa_atraso STRING
+    OPTIONS(description = 'Classificação do pagamento em em_dia, atraso_1_30, atraso_31_60, atraso_acima_60 ou pendente.'),
   vlr_gmv_real_oficial_brl NUMERIC
     OPTIONS(description = 'Valor oficial do GMV da instalação na competência, em reais.'),
   vlr_gmv_gerador_brl NUMERIC
@@ -62,6 +70,12 @@ CREATE TABLE IF NOT EXISTS `lemon-ae-case.trusted.faturamento_cliente_mensal`
     OPTIONS(description = 'Valor total pago registrado no faturamento, incluindo multa e juros, em reais.'),
   vlr_principal_pago_brl NUMERIC
     OPTIONS(description = 'Valor pago excluindo multa e juros, calculado a partir dos valores do faturamento, em reais.'),
+  vlr_liquidado_gerador_brl NUMERIC
+    OPTIONS(description = 'Parcela do principal pago atribuída ao gerador proporcionalmente ao GMV do gerador.'),
+  vlr_liquidado_gerador_d60_brl NUMERIC
+    OPTIONS(description = 'Parcela liquidada do gerador reconhecida na competência por ter sido paga até D+60.'),
+  vlr_liquidado_gerador_apos_d60_brl NUMERIC
+    OPTIONS(description = 'Parcela liquidada do gerador recebida depois de D+60, tratada como recuperação posterior.'),
   vlr_juros_pago_brl NUMERIC
     OPTIONS(description = 'Valor de juros pago registrado no faturamento, em reais.'),
   vlr_multa_paga_brl NUMERIC
@@ -70,6 +84,8 @@ CREATE TABLE IF NOT EXISTS `lemon-ae-case.trusted.faturamento_cliente_mensal`
     OPTIONS(description = 'Quantidade de créditos de energia faturados para a instalação na competência, em kWh.'),
   qtd_creditos_faturados_pagos_kwh NUMERIC
     OPTIONS(description = 'Quantidade de créditos faturados associada a faturamento pago; zero quando o faturamento não está pago.'),
+  qtd_creditos_faturados_pagos_d60_kwh NUMERIC
+    OPTIONS(description = 'Créditos faturados associados a pagamento realizado até D+60.'),
   qtd_instrumentos INT64
     OPTIONS(description = 'Quantidade total de boletos e PIX vinculados ao faturamento.'),
   qtd_boletos INT64
@@ -82,6 +98,12 @@ CREATE TABLE IF NOT EXISTS `lemon-ae-case.trusted.faturamento_cliente_mensal`
     OPTIONS(description = 'Indica que existe faturamento emitido para a instalação e competência.'),
   flg_pago BOOL
     OPTIONS(description = 'Indica que o faturamento está pago ou possui data de pagamento registrada.'),
+  flg_pago_ate_d60 BOOL
+    OPTIONS(description = 'Indica pagamento realizado até 60 dias corridos após o vencimento-base.'),
+  flg_pago_apos_d60 BOOL
+    OPTIONS(description = 'Indica pagamento realizado depois de 60 dias corridos após o vencimento-base.'),
+  flg_pendente_d60 BOOL
+    OPTIONS(description = 'Indica ausência de pagamento elegível até o limite D+60.'),
   flg_multiplos_instrumentos_pagos BOOL
     OPTIONS(description = 'Indica que mais de um instrumento está marcado como pago para o mesmo faturamento.'),
   ingerido_em TIMESTAMP
