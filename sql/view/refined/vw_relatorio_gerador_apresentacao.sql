@@ -26,6 +26,10 @@ CREATE OR REPLACE VIEW
     OPTIONS(description = 'Nome ou identificador funcional da usina.'),
   dt_mes_referencia
     OPTIONS(description = 'Mês de competência do relatório do gerador.'),
+  dt_fechamento_competencia
+    OPTIONS(description = 'Data de maturação D+60 usada para fechar a competência.'),
+  status_fechamento
+    OPTIONS(description = 'Estado do fechamento publicado.'),
   perc_desempenho_lemon
     OPTIONS(description = 'Desempenho da Lemon em escala percentual de 0 a 100, arredondado para quatro casas decimais.'),
   perc_take_rate_aplicado
@@ -34,6 +38,10 @@ CREATE OR REPLACE VIEW
     OPTIONS(description = 'Valor de cobrança atribuído ao gerador, em reais.'),
   vlr_receita_bruta_gerador_brl
     OPTIONS(description = 'Receita bruta principal atribuída ao gerador, em reais.'),
+  vlr_liquidado_gerador_apos_d60_brl
+    OPTIONS(description = 'Valor recebido após D+60, evidenciado como recuperação posterior.'),
+  vlr_saldo_nao_liquidado_d60_brl
+    OPTIONS(description = 'Saldo do gerador que não foi liquidado até D+60.'),
   vlr_receita_multas_brl
     OPTIONS(description = 'Receita recebida de multas e juros, em reais.'),
   vlr_tusd_descontada_gerador_brl
@@ -53,10 +61,14 @@ SELECT
   id_usina,
   usina,
   dt_mes_referencia,
+  dt_fechamento_competencia,
+  status_fechamento,
   ROUND(perc_desempenho_lemon * 100, 4) AS perc_desempenho_lemon,
   ROUND(perc_take_rate_aplicado * 100, 2) AS perc_take_rate_aplicado,
   vlr_cobranca_gerador_brl,
   vlr_receita_bruta_gerador_brl,
+  vlr_liquidado_gerador_apos_d60_brl,
+  vlr_saldo_nao_liquidado_d60_brl,
   vlr_receita_multas_brl,
   vlr_tusd_descontada_gerador_brl,
   vlr_repasse_gerador_brl
